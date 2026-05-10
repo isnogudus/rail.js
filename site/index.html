@@ -1,0 +1,443 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>rail.js — Workflows as explicit graphs</title>
+<meta name="description" content="A small JavaScript library for workflows expressed as explicit, validated graphs of named steps. Zero dependencies, async, Mermaid-friendly.">
+
+<!-- Library import: site is self-contained via site/lib/. -->
+<script type="importmap">
+  {
+    "imports": {
+      "@isnogudus/rail.js": "./lib/rail.js"
+    }
+  }
+</script>
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,400i;9..144,500i&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="./style.css">
+</head>
+<body>
+
+<!-- ====================================================================
+     NAV
+     ==================================================================== -->
+<header class="nav">
+  <a class="nav-mark" href="#top">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+      <circle cx="6" cy="12" r="2.5"></circle>
+      <circle cx="18" cy="6" r="2.5"></circle>
+      <circle cx="18" cy="18" r="2.5"></circle>
+      <line x1="8.5" y1="11" x2="15.5" y2="7"></line>
+      <line x1="8.5" y1="13" x2="15.5" y2="17"></line>
+    </svg>
+    rail.js
+  </a>
+  <nav class="nav-links">
+    <a href="#problem">Problem</a>
+    <a href="#concept">Concept</a>
+    <a href="#compile">Compile</a>
+    <a href="#demo">Live demo</a>
+    <a href="#features">Features</a>
+    <a href="https://github.com/isnogudus/rail.js" target="_blank" rel="noopener">GitHub →</a>
+  </nav>
+</header>
+
+<main id="top">
+
+<!-- ====================================================================
+     HERO
+     ==================================================================== -->
+<section class="hero" style="border-top: none;">
+  <div class="wrap">
+    <div class="hero-grid">
+      <div>
+        <div class="eyebrow">Workflow library · Zero deps</div>
+        <h1 class="display">
+          Workflows as <em>explicit</em> graphs.
+        </h1>
+        <p class="lede">
+          A small JavaScript library that turns nested control flow into named
+          nodes, named outputs, and visible wires. Compile-time validated,
+          async end to end, Mermaid-friendly — and not a single runtime
+          dependency.
+        </p>
+        <div class="hero-meta">
+          <div><strong>0</strong><span>runtime deps</span></div>
+          <div><strong>3</strong><span>compile phases</span></div>
+          <div><strong>JSDoc</strong><span>no TS build</span></div>
+          <div><strong>ESM</strong><span>node + browser</span></div>
+        </div>
+      </div>
+
+      <div class="stage" style="padding: 24px 24px 28px;">
+        <div class="stage-label">graph('sendMessage')</div>
+        <svg id="hero-diagram" viewBox="0 0 520 340" class="diagram" style="margin-top: 14px;"></svg>
+        <div class="stage-controls">
+          <button class="btn active" data-hero="happy">Happy path</button>
+          <button class="btn ghost" data-hero="invalid">Invalid input</button>
+          <button class="btn ghost" data-hero="net5xx">Network error</button>
+          <button class="btn ghost" data-hero="throws">Unknown throw</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ====================================================================
+     01 / PROBLEM
+     ==================================================================== -->
+<section id="problem">
+  <div class="wrap">
+    <div class="sec-head">
+      <div class="sec-num">01 / Problem</div>
+      <div>
+        <h2 class="sec-title">Nested <span class="mono">try/catch</span> hides the path through your logic.</h2>
+        <p class="sec-sub">
+          “Send a message” sounds simple. In practice it’s validation,
+          encryption, network errors, retries, abortable I/O, cleanup. In
+          imperative JavaScript that becomes a nest of <span class="mono">try</span>/<span class="mono">catch</span> blocks
+          where, three refactors in, nobody can tell which path leads where.
+        </p>
+      </div>
+    </div>
+
+    <div class="compare">
+      <div>
+        <div class="compare-label">Before — imperative</div>
+<pre class="code"><span class="k">async function</span> <span class="n">sendMessage</span>(ctx) {
+  <span class="k">if</span> (!ctx.roomId) {
+    <span class="k">return</span> { ok: <span class="k">false</span>, error: <span class="s">'INVALID'</span> };
+  }
+  <span class="k">let</span> encrypted;
+  <span class="k">try</span> {
+    encrypted = <span class="k">await</span> <span class="n">encrypt</span>(ctx);
+  } <span class="k">catch</span> (e) {
+    <span class="k">if</span> (e.name === <span class="s">'NoKeysError'</span>)
+      <span class="k">return</span> { ok: <span class="k">false</span>, error: <span class="s">'NO_KEYS'</span> };
+    <span class="k">throw</span> e;
+  }
+  <span class="k">try</span> {
+    <span class="k">await</span> <span class="n">fetch</span>(ctx.url, { body: encrypted });
+    <span class="k">return</span> { ok: <span class="k">true</span> };
+  } <span class="k">catch</span> (e) {
+    <span class="k">if</span> (e.name === <span class="s">'NetworkError'</span>)
+      <span class="k">return</span> { ok: <span class="k">false</span>, error: <span class="s">'NET_5xx'</span> };
+    <span class="k">throw</span> e;
+  }
+}</pre>
+      </div>
+      <div>
+        <div class="compare-label">After — the graph is the control flow</div>
+<pre class="code"><span class="k">const</span> <span class="n">sendMessage</span> = <span class="n">activity</span>((a) =&gt; {
+  <span class="k">const</span> start = a.<span class="n">entry</span>(<span class="s">'in'</span>);
+  <span class="k">const</span> { success, failure } = a.<span class="n">standardExits</span>();
+
+  <span class="k">const</span> validate = a.<span class="n">addNode</span>(<span class="s">'validate'</span>,
+    <span class="n">node</span>(validateFn, { outputs: [<span class="s">'ok'</span>, <span class="s">'invalid'</span>] }));
+  <span class="k">const</span> encrypt = a.<span class="n">addNode</span>(<span class="s">'encrypt'</span>,
+    <span class="n">node</span>(encryptFn, { outputs: [<span class="s">'ok'</span>, <span class="s">'noKeys'</span>] }));
+  <span class="k">const</span> send = a.<span class="n">addNode</span>(<span class="s">'send'</span>, <span class="n">catching</span>(
+    <span class="n">node</span>(sendFn, { outputs: [<span class="s">'ok'</span>] }),
+    { <span class="n">NetworkError</span>: <span class="s">'net5xx'</span> }
+  ));
+
+  a.<span class="n">wire</span>(start,                  validate);
+  a.<span class="n">wire</span>(validate.<span class="n">out</span>(<span class="s">'ok'</span>),     encrypt);
+  a.<span class="n">wire</span>(validate.<span class="n">out</span>(<span class="s">'invalid'</span>), failure);
+  a.<span class="n">wire</span>(encrypt.<span class="n">out</span>(<span class="s">'ok'</span>),      send);
+  a.<span class="n">wire</span>(encrypt.<span class="n">out</span>(<span class="s">'noKeys'</span>),  failure);
+  a.<span class="n">wire</span>(send.<span class="n">out</span>(<span class="s">'ok'</span>),         success);
+  a.<span class="n">wire</span>(send.<span class="n">out</span>(<span class="s">'net5xx'</span>),     failure);
+});</pre>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ====================================================================
+     02 / CONCEPT
+     ==================================================================== -->
+<section id="concept">
+  <div class="wrap">
+    <div class="sec-head">
+      <div class="sec-num">02 / Concept</div>
+      <div>
+        <h2 class="sec-title">Three building blocks. One uniform interface.</h2>
+        <p class="sec-sub">
+          Every Rail-Node — whether a single step, a composed activity, or a
+          parallel fan-out — exposes the same contract:
+          <span class="mono">compile()</span>, <span class="mono">compiled()</span>,
+          <span class="mono">invoke(name, ctx, runState)</span>. Composing
+          workflows is therefore just adding nodes.
+        </p>
+      </div>
+    </div>
+
+    <div class="grid-3">
+      <div class="card">
+        <div class="pill">railKind: 'step'</div>
+        <h3 style="margin-top: 16px;">Step-Node</h3>
+        <p>
+          Wraps a user function with declared input and output ports.
+          A failed step doesn’t throw — it returns a named output.
+        </p>
+        <pre class="code" style="margin-top: 16px; font-size: 11.5px;"><span class="n">node</span>(fn, { outputs: [<span class="s">'ok'</span>, <span class="s">'failed'</span>] })</pre>
+      </div>
+      <div class="card">
+        <div class="pill">railKind: 'activity'</div>
+        <h3 style="margin-top: 16px;">Activity</h3>
+        <p>
+          A graph of named sub-nodes connected by wires. Compiles in three
+          phases. Composes recursively: an activity can be added as a sub-node
+          of another activity.
+        </p>
+        <pre class="code" style="margin-top: 16px; font-size: 11.5px;"><span class="n">activity</span>((a) =&gt; { <span class="c">/* ... */</span> })</pre>
+      </div>
+      <div class="card">
+        <div class="pill">railKind: 'parallel'</div>
+        <h3 style="margin-top: 16px;">Parallel-Node</h3>
+        <p>
+          Runs branches concurrently via <span class="mono">Promise.allSettled</span>.
+          Each branch gets its own fork of the run-state and a combined abort
+          signal. Returns a typed parallel-results ctx.
+        </p>
+        <pre class="code" style="margin-top: 16px; font-size: 11.5px;"><span class="n">parallel</span>({ profile, keys, audit })</pre>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top: 32px; background: var(--ink); color: var(--paper); border-color: var(--ink);">
+      <div style="display: grid; grid-template-columns: 1fr auto; gap: 32px; align-items: center;">
+        <div>
+          <h3 style="color: var(--paper); margin: 0 0 8px;">A flow holds one node and runs it.</h3>
+          <p style="color: #b5ad9c; margin: 0;">
+            <span class="mono">flow(name, node)</span> is the only stateful boundary —
+            and it’s actually stateless. Each <span class="mono">run(ctx, opts)</span> allocates a
+            fresh run-state in its own closure, so the same flow object can be
+            invoked concurrently any number of times, with its own logger,
+            tracer, and signals per call.
+          </p>
+        </div>
+        <div class="mono" style="font-size: 11px; color: #8e8675; text-align: right; line-height: 1.7;">
+          flow.run(ctx, opts)<br/>→ { ctx, trace, terminus }
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ====================================================================
+     03 / COMPILE
+     ==================================================================== -->
+<section id="compile">
+  <div class="wrap">
+    <div class="sec-head">
+      <div class="sec-num">03 / Compile</div>
+      <div>
+        <h2 class="sec-title">Three phases catch the bugs before the first run.</h2>
+        <p class="sec-sub">
+          Wire-direction, port-typo, and cross-builder mistakes are caught
+          synchronously at the call site. <span class="mono">activity.compile()</span>
+          then runs three phases — declaration, completeness, topology —
+          collecting every issue in a phase before short-circuiting.
+        </p>
+      </div>
+    </div>
+
+    <div class="grid-2">
+      <div class="card">
+        <div class="phase-row">
+          <span class="phase-letter">A</span>
+          <span class="phase-name">Declaration</span>
+          <span class="phase-ex">NO_ENTRY · DUPLICATE_NODE · NOT_A_NODE</span>
+        </div>
+        <div class="phase-row">
+          <span class="phase-letter">B</span>
+          <span class="phase-name">Completeness</span>
+          <span class="phase-ex">UNWIRED_OUTPUT · ENTRY_NOT_WIRED · EXIT_NOT_WIRED</span>
+        </div>
+        <div class="phase-row">
+          <span class="phase-letter">C</span>
+          <span class="phase-name">Topology</span>
+          <span class="phase-ex">UNREACHABLE_NODE · CYCLE · UNREACHABLE_EXIT</span>
+        </div>
+      </div>
+
+      <div>
+        <p class="bullet" style="margin: 0 0 14px;"><b>Idempotent.</b>
+          <span class="mono">compile()</span> on an already-compiled node returns
+          immediately, so sharing a node across activities compiles it exactly once.</p>
+        <p class="bullet" style="margin: 0 0 14px;"><b>Recursive.</b>
+          Compiling an outer activity recursively compiles every sub-node and
+          every parallel branch, with path hints in the error.</p>
+        <p class="bullet" style="margin: 0 0 14px;"><b>Convergent inputs are intentional.</b>
+          Multiple wires ending at the same node-input are allowed — “no matter
+          which path led here, continue from this node.”</p>
+        <p class="bullet" style="margin: 0;"><b>No exception magic.</b>
+          The library has no <span class="mono">throws</span> mechanism. Steps that interact with
+          throwing code do <span class="mono">try/catch</span> themselves, or wrap a Step-Node
+          with <span class="mono">catching(...)</span>.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ====================================================================
+     04 / LIVE DEMO
+     ==================================================================== -->
+<section id="demo">
+  <div class="wrap">
+    <div class="sec-head">
+      <div class="sec-num">04 / Live demo</div>
+      <div>
+        <h2 class="sec-title">The same graph, running in your browser.</h2>
+        <p class="sec-sub">
+          The <span class="mono">sendMessage</span> activity from above is loaded as a real Rail-Node
+          on this page. The diagram, the trace, and the result are all driven
+          by an actual <span class="mono">flow.run(...)</span> call. Pick a scenario.
+        </p>
+      </div>
+    </div>
+
+    <div class="stage">
+      <div class="stage-label">flow('sendMessage').run(ctx)</div>
+
+      <div class="stage-controls" style="margin-bottom: 18px; margin-top: 10px;">
+        <button class="btn active" data-demo="happy">Happy path</button>
+        <button class="btn ghost" data-demo="invalid">Invalid input</button>
+        <button class="btn ghost" data-demo="net5xx">Network error</button>
+        <button class="btn ghost" data-demo="throws">Unknown throw</button>
+      </div>
+
+      <svg id="demo-diagram" viewBox="0 0 720 360" class="diagram"></svg>
+
+      <div class="demo-grid">
+        <div>
+          <div class="compare-label">Trace</div>
+          <div class="trace" id="demo-trace"></div>
+        </div>
+        <div>
+          <div class="compare-label">Result</div>
+          <pre class="result" id="demo-result"></pre>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ====================================================================
+     05 / FEATURES
+     ==================================================================== -->
+<section id="features">
+  <div class="wrap">
+    <div class="sec-head">
+      <div class="sec-num">05 / Features</div>
+      <div>
+        <h2 class="sec-title">Small surface, sharp edges where they matter.</h2>
+      </div>
+    </div>
+
+    <div class="grid-3">
+      <div class="feature">
+        <div class="feature-icon">
+          <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M8 12l3 3 5-6"/></svg>
+        </div>
+        <h4>Compile-time validation</h4>
+        <p>Structural bugs surface at <span class="mono">compile()</span>, not in the third
+          production incident. Phase reports collect every issue before they
+          bubble up.</p>
+      </div>
+      <div class="feature">
+        <div class="feature-icon">
+          <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="2"/><path d="M3 12h4M17 12h4M12 3v4M12 17v4"/></svg>
+        </div>
+        <h4>Live tracer</h4>
+        <p>Structured events for every lifecycle scope — run, step, activity,
+          branch — each with start, end, throw. Perfect for a live UI of the
+          run.</p>
+      </div>
+      <div class="feature">
+        <div class="feature-icon">
+          <svg viewBox="0 0 24 24"><path d="M3 7l3 3-3 3M21 7l-3 3 3 3M9 5v14M15 5v14"/></svg>
+        </div>
+        <h4>Parallel without magic</h4>
+        <p><span class="mono">parallel({ a, b })</span> runs branches concurrently with
+          <span class="mono">Promise.allSettled</span> and an internal abort linkage on the
+          combined cancellation signal.</p>
+      </div>
+      <div class="feature">
+        <div class="feature-icon">
+          <svg viewBox="0 0 24 24"><rect x="4" y="6" width="6" height="12" rx="1"/><rect x="14" y="6" width="6" height="12" rx="1"/><path d="M10 12h4"/></svg>
+        </div>
+        <h4>Mermaid render</h4>
+        <p><span class="mono">flow.toMermaid()</span> produces a flowchart string ready to
+          embed in markdown, READMEs, or live renderers like this page.</p>
+      </div>
+      <div class="feature">
+        <div class="feature-icon">
+          <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 8v5l3 2"/></svg>
+        </div>
+        <h4>Cancellation</h4>
+        <p>Cooperative <span class="mono">signal</span> exposed to steps as <span class="mono">runInfo.signal</span>,
+          plus a hard <span class="mono">killSignal</span> the runner checks between nodes.
+          Standard <span class="mono">AbortSignal</span> on both.</p>
+      </div>
+      <div class="feature">
+        <div class="feature-icon">
+          <svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h10"/></svg>
+        </div>
+        <h4>Plain ESM</h4>
+        <p>No bundler, no TypeScript pipeline, no runtime dependencies. Plain
+          JS with JSDoc, runs in modern Node and modern browsers alike.</p>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top: 32px; background: var(--ink); color: var(--paper); border-color: var(--ink);">
+      <div style="display: grid; grid-template-columns: 1fr auto; gap: 32px; align-items: center;">
+        <div>
+          <h3 style="color: var(--paper); margin: 0 0 8px;">Rail-graphs are monadic pipelines, just more honest.</h3>
+          <p style="color: #b5ad9c; margin: 0;">
+            A linear activity with <span class="mono">success</span>/<span class="mono">failure</span> is structurally
+            <span class="mono">StateT</span> over <span class="mono">Either</span> — the railway-oriented
+            programming of Trailblazer or <span class="mono">Result</span>-chains in Rust/Swift/F#.
+            rail.js generalises in two directions: outputs can be n-ary, and the
+            graph is statically inspectable rather than hidden in <span class="mono">.bind()</span>.
+          </p>
+        </div>
+        <div class="mono" style="font-size: 11px; color: #8e8675; text-align: right; line-height: 1.7;">
+          Result&lt;T,E&gt;<br/>StateT &lt;Either&gt;<br/>Trailblazer Activity<br/>→ rail.js
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ====================================================================
+     FOOTER
+     ==================================================================== -->
+<footer>
+  <div class="wrap">
+    <div class="row">
+      <div>
+        <div class="mono" style="margin-bottom: 6px;">rail.js</div>
+        <div>MIT · Plain JS + JSDoc · 0 runtime dependencies · Node 22+ / modern browsers</div>
+      </div>
+      <div style="text-align: right;">
+        <div class="mono">npm install @isnogudus/rail.js</div>
+        <div style="margin-top: 6px;">— one graph, one trace, one diagram.</div>
+      </div>
+    </div>
+  </div>
+</footer>
+
+</main>
+
+<!-- Diagrams + live-demo binding -->
+<script type="module" src="./diagrams.js"></script>
+<script type="module" src="./demo.js"></script>
+
+</body>
+</html>
