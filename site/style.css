@@ -335,7 +335,7 @@ pre.code .e { color: #e08a6e; }              /* error / fail / accent */
 
 .demo-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: 1fr 1.5fr 1fr;
   gap: 16px;
   margin-top: 20px;
 }

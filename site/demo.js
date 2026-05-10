@@ -71,6 +71,7 @@ const scenarios = {
 /* DOM                                                                */
 /* ------------------------------------------------------------------ */
 
+const elInput  = document.getElementById('demo-input');
 const elTrace  = document.getElementById('demo-trace');
 const elResult = document.getElementById('demo-result');
 const buttons  = document.querySelectorAll('[data-demo]');
@@ -119,6 +120,11 @@ function renderTrace(trace) {
   elTrace.innerHTML = html.join('');
 }
 
+function renderInput(input) {
+  elInput.innerHTML =
+    `<span class="label">ctx:</span>\n${escapeHtml(formatJson(input))}`;
+}
+
 function renderResult(success, payload) {
   elResult.classList.remove('fail');
   if (success) {
@@ -140,6 +146,9 @@ function renderResult(success, payload) {
 
 async function runDemo(scenarioName) {
   const scenario = scenarios[scenarioName] ?? scenarios.happy;
+
+  // Show the input the run will receive.
+  renderInput(scenario.input);
 
   // Reset UI panels while the run is queued.
   elTrace.innerHTML = '<div class="empty">…running…</div>';
