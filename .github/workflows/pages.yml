@@ -1,0 +1,54 @@
+name: Deploy site to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'site/**'
+      - 'rail.js'
+      - 'rail/**'
+      - '.github/workflows/pages.yml'
+  workflow_dispatch:
+
+# Pages permissions per https://docs.github.com/en/pages/getting-started-with-github-pages/using-custom-workflows-with-github-pages
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Allow only one concurrent deployment, but don't cancel an in-progress run.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Keep site/lib/ in sync with the library at the repo root, so the
+      # Pages deploy reflects the current rail.js source even if a contributor
+      # forgot to run `npm run site:sync` locally.
+      - name: Sync library copy into site/lib
+        run: |
+          rm -rf site/lib
+          mkdir -p site/lib
+          cp rail.js site/lib/rail.js
+          cp -r rail site/lib/rail
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
