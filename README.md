@@ -19,7 +19,7 @@ This README is the practical guide.
 ## Install
 
 ```sh
-npm install rail.js
+npm install @isnogudus/rail.js
 ```
 
 ESM only. Node 22+ recommended (Node 20+ should also work; AbortSignal
@@ -28,7 +28,7 @@ combination is implemented manually for portability).
 ## Quick start
 
 ```js
-import { activity, node, flow } from 'rail.js';
+import { activity, node, flow } from '@isnogudus/rail.js';
 
 const sendMessage = activity((a) => {
   const start = a.entry('in');
@@ -111,7 +111,7 @@ import {
   isRailNode,
   // Errors
   RailBuildError, RailCompileError, RailRuntimeError,
-} from 'rail.js';
+} from '@isnogudus/rail.js';
 ```
 
 ### Step contract
