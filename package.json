@@ -1,0 +1,51 @@
+{
+  "name": "rail.js",
+  "version": "0.1.0",
+  "description": "Small workflow library: explicit, validated graphs of named steps. No dependencies, no persistence. Runs in modern Node and browsers.",
+  "type": "module",
+  "main": "./rail.js",
+  "exports": {
+    ".": "./rail.js"
+  },
+  "sideEffects": false,
+  "files": [
+    "rail.js",
+    "rail/",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "example": "node example.js",
+    "examples": "node examples/run-all.js"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "devDependencies": {
+    "vitest": "^2.1.0"
+  },
+  "keywords": [
+    "workflow",
+    "graph",
+    "rail",
+    "railway",
+    "pipeline",
+    "state-machine",
+    "bpmn"
+  ],
+  "license": "MIT",
+  "author": {
+    "name": "Markus Teichmann",
+    "email": "markus.teichmann@go-21.de"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/isnogudus/rail.js.git"
+  },
+  "bugs": {
+    "url": "https://github.com/isnogudus/rail.js/issues"
+  },
+  "homepage": "https://github.com/isnogudus/rail.js#readme"
+}
