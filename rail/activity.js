@@ -21,6 +21,22 @@ import {
 import { renderActivityToMermaid } from './mermaid.js';
 
 /* ------------------------------------------------------------------ */
+/* Internal wire-key encoding                                         */
+/*                                                                    */
+/* A wire's `sourceKey` identifies its source endpoint as a string so */
+/* it can serve as a Map key. The entry has exactly one source, the   */
+/* rest are node outputs. Keeping the format in one place means a     */
+/* future scheme change (e.g. `name#port`) is a single-line edit.     */
+/* ------------------------------------------------------------------ */
+
+const ENTRY_KEY = '__entry__';
+
+/** @param {string} nodeName @param {string} port */
+function portKey(nodeName, port) {
+  return `node:${nodeName}.${port}`;
+}
+
+/* ------------------------------------------------------------------ */
 /* Endpoint handles                                                   */
 /* ------------------------------------------------------------------ */
 
@@ -170,8 +186,8 @@ export function activity(builderFn) {
 
       const sourceKey =
         source._kind === 'entry'
-          ? '__entry__'
-          : `node:${source._nodeName}.${source._port}`;
+          ? ENTRY_KEY
+          : portKey(source._nodeName, source._port);
 
       let targetDesc;
       if (target._kind === 'exit') {
@@ -281,7 +297,7 @@ export function activity(builderFn) {
       // -- Phase B: completeness --
       const phaseB = [];
 
-      const entryWires = state.wires.filter((w) => w.sourceKey === '__entry__');
+      const entryWires = state.wires.filter((w) => w.sourceKey === ENTRY_KEY);
       if (entryWires.length === 0) {
         phaseB.push({ code: 'ENTRY_NOT_WIRED' });
       } else if (entryWires.length > 1) {
@@ -292,7 +308,7 @@ export function activity(builderFn) {
       for (const sn of state.subNodes) {
         for (const out of sn.node.outputs) {
           const matches = state.wires.filter(
-            (w) => w.sourceKey === `node:${sn.name}.${out}`
+            (w) => w.sourceKey === portKey(sn.name, out)
           );
           if (matches.length === 0) {
             phaseB.push({ code: 'UNWIRED_OUTPUT', node: sn.name, output: out });
@@ -325,7 +341,7 @@ export function activity(builderFn) {
       const wireFromEntry = entryWires[0].targetDesc;
       const wireFromOutput = new Map();
       for (const w of state.wires) {
-        if (w.sourceKey !== '__entry__') {
+        if (w.sourceKey !== ENTRY_KEY) {
           wireFromOutput.set(w.sourceKey, w.targetDesc);
         }
       }
@@ -349,7 +365,7 @@ export function activity(builderFn) {
         const n = queue.shift();
         const sub = subNodeMap.get(n);
         for (const out of sub.outputs) {
-          const next = wireFromOutput.get(`node:${n}.${out}`);
+          const next = wireFromOutput.get(portKey(n, out));
           if (!next) continue;
           if (next.kind === 'exit') {
             reachableExits.add(next.name);
@@ -390,7 +406,7 @@ export function activity(builderFn) {
             continue;
           }
           const out = sub.outputs[frame.idx++];
-          const next = wireFromOutput.get(`node:${frame.node}.${out}`);
+          const next = wireFromOutput.get(portKey(frame.node, out));
           if (!next || next.kind === 'exit') continue;
           const m = next.name;
           if (color[m] === 'gray') {
@@ -504,7 +520,7 @@ export function activity(builderFn) {
           }
 
           const next = activityNode._wireFromOutput.get(
-            `node:${subName}.${result.output}`
+            portKey(subName, result.output)
           );
           if (!next) {
             throw new RailRuntimeError(
