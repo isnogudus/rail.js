@@ -24,6 +24,6 @@ export {
 
 export {
   RailBuildError,
-  RailCompileError,
+  RailCheckError,
   RailRuntimeError,
 } from './rail/errors.js';

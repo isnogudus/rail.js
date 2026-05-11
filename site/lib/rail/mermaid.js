@@ -57,7 +57,6 @@ export function renderActivityToMermaid(activity, name = '<anonymous>', opts = {
   }
 
   for (const sn of state.subNodes) {
-    if (!sn.valid) continue;
     const id = `n_${sanitizeId(sn.name)}`;
     const label = escapeLabel(sn.name);
     lines.push(`  ${nodeShape(sn.node.railKind, id, label)}`);

@@ -6,9 +6,9 @@ const silent = { logger: () => {} };
 describe('Cancellation: signal + killSignal (§6.7, acceptance #23, #24)', () => {
   it('opts.signal is exposed as runInfo.signal (cooperative)', async () => {
     let captured;
-    const f = node((_c, ri) => { captured = ri.signal; return 'ok'; },
+    const f = node((_c, _l, ri) => { captured = ri.signal; return 'ok'; },
       { outputs: ['ok'] });
-    f.compile();
+    f.check();
     const ctrl = new AbortController();
     await flow('s', f).run({}, { ...silent, signal: ctrl.signal });
     expect(captured).toBe(ctrl.signal);
@@ -18,7 +18,7 @@ describe('Cancellation: signal + killSignal (§6.7, acceptance #23, #24)', () =>
     const ctrl = new AbortController();
 
     const validate = node(() => 'ok', { outputs: ['ok'] });
-    const send = node(async (_c, ri) => {
+    const send = node(async (_c, _l, ri) => {
       // Wait until aborted, then return cancelled.
       while (!ri.signal?.aborted) await new Promise((r) => setTimeout(r, 1));
       return 'cancelled';
@@ -35,7 +35,7 @@ describe('Cancellation: signal + killSignal (§6.7, acceptance #23, #24)', () =>
       a.wire(s.out('ok'), ok);
       a.wire(s.out('cancelled'), cancelled);
     });
-    upload.compile();
+    upload.check();
 
     const promise = flow('upload', upload).run({}, { ...silent, signal: ctrl.signal });
     setTimeout(() => ctrl.abort(), 5);
@@ -61,7 +61,7 @@ describe('Cancellation: signal + killSignal (§6.7, acceptance #23, #24)', () =>
       a.wire(first.out('ok'), second);
       a.wire(second.out('ok'), ok);
     });
-    a.compile();
+    a.check();
 
     try {
       await flow('a', a).run({}, { ...silent, killSignal: kill.signal });
@@ -78,9 +78,9 @@ describe('Cancellation: signal + killSignal (§6.7, acceptance #23, #24)', () =>
     const userSignal = new AbortController();
     const killSignal = new AbortController();
     let combined;
-    const a = node((_c, ri) => { combined = ri.signal; return 'ok'; },
+    const a = node((_c, _l, ri) => { combined = ri.signal; return 'ok'; },
       { outputs: ['ok'] });
-    a.compile();
+    a.check();
 
     await flow('a', a).run({}, { ...silent, signal: userSignal.signal, killSignal: killSignal.signal });
     expect(combined.aborted).toBe(false);
@@ -105,7 +105,7 @@ describe('Cancellation: signal + killSignal (§6.7, acceptance #23, #24)', () =>
       a.wire(i1.out('ok'), i2);
       a.wire(i2.out('ok'), ok);
     });
-    outer.compile();
+    outer.check();
 
     // Outer steps: i1 (compound), i2 (compound) = 2 outer steps
     // Inner steps inside each: x = 1 inner step per

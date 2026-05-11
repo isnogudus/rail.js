@@ -210,6 +210,42 @@ section {
 }
 
 /* ------------------------------------------------------------------ */
+/* Tabs (within a .stage)                                             */
+/* ------------------------------------------------------------------ */
+
+.tabs {
+  display: flex;
+  gap: 2px;
+  margin: 6px 0 18px;
+  border-bottom: 1px solid var(--line);
+}
+.tab {
+  background: transparent;
+  border: none;
+  padding: 8px 14px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  color: var(--muted);
+  cursor: pointer;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  transition: color 0.12s ease, border-color 0.12s ease;
+}
+.tab:hover { color: var(--ink); }
+.tab.active {
+  color: var(--ink);
+  border-bottom-color: var(--rail);
+}
+.tab-panel { display: none; }
+.tab-panel.active { display: block; }
+.tab-panel pre.code {
+  max-height: 540px;
+  overflow: auto;
+}
+
+/* ------------------------------------------------------------------ */
 /* Buttons                                                            */
 /* ------------------------------------------------------------------ */
 
@@ -239,7 +275,7 @@ section {
   margin-top: 20px;
 }
 .hero .stage-controls {
-  flex-wrap: nowrap; gap: 5px;
+  flex-wrap: wrap; gap: 5px;
 }
 .hero .stage-controls .btn {
   padding: 7px 10px; font-size: 10.5px;
@@ -342,58 +378,146 @@ pre.code .e { color: #e08a6e; }              /* error / fail / accent */
 @media (max-width: 900px) { .demo-grid { grid-template-columns: 1fr; } }
 
 /* ------------------------------------------------------------------ */
-/* SVG diagram                                                        */
+/* Diagrams — Mermaid-rendered, restyled with our design tokens       */
 /* ------------------------------------------------------------------ */
 
-.diagram {
+.diagram-host {
   width: 100%;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  min-height: 180px;
+}
+.diagram-host svg {
+  max-width: 100%;
   height: auto;
   display: block;
+  background: transparent !important;
 }
 
-.node-rect       { fill: var(--paper); stroke: var(--ink); stroke-width: 1.5; transition: fill 0.18s ease, stroke 0.18s ease; }
-.node-text       { font-family: 'JetBrains Mono', monospace; font-size: 13px; fill: var(--ink); font-weight: 500; }
-.port-text       { font-family: 'JetBrains Mono', monospace; font-size: 10px; fill: var(--muted); }
-
-.wire            { stroke: var(--line-strong); stroke-width: 1.5; fill: none; transition: stroke 0.18s ease, stroke-width 0.18s ease; }
-.wire.active     { stroke: var(--rail); stroke-width: 2.5; }
-.wire.fail-active{ stroke: var(--clay); stroke-width: 2.5; }
-.wire.dotted     { stroke: var(--line-strong); stroke-width: 1.2; fill: none; stroke-dasharray: 3 4; }
-
-.wire-label      { font-family: 'JetBrains Mono', monospace; font-size: 10px; fill: var(--muted); }
-.wire-label-bg   { fill: var(--paper); }
-
-.endpoint-circle { fill: var(--paper); stroke-width: 1.5; }
-.entry-circle    { stroke: var(--ink); }
-.exit-success    { stroke: var(--rail); fill: var(--rail-soft); }
-.exit-failure    { stroke: var(--clay); fill: var(--clay-soft); }
-
-.endpoint-circle.reached.success {
-  fill: var(--rail);
-  stroke: var(--rail);
-}
-.endpoint-circle.reached.success ~ text,
-.endpoint-circle.reached.failure ~ text {
-  fill: var(--paper);
-}
-.endpoint-circle.reached.failure {
-  fill: var(--clay);
-  stroke: var(--clay);
+/* Base node styling — paper fill, ink stroke. Mermaid sets inline
+   `style`, so !important is necessary to win. */
+.diagram-host svg .node rect,
+.diagram-host svg .node polygon,
+.diagram-host svg .node circle {
+  fill: var(--paper) !important;
+  stroke: var(--ink) !important;
+  stroke-width: 1.5px !important;
+  transition: fill 0.25s ease, stroke 0.25s ease, stroke-width 0.25s ease;
 }
 
-.token { fill: var(--rail); }
-.token.fail { fill: var(--clay); }
+/* Edges — soft line by default. */
+.diagram-host svg .edgePath path,
+.diagram-host svg path.flowchart-link,
+.diagram-host svg .flowchart-link {
+  stroke: var(--line-strong) !important;
+  stroke-width: 1.5px !important;
+  fill: none !important;
+  transition: stroke 0.25s ease, stroke-width 0.25s ease;
+}
 
-.node-rect.active {
-  stroke: var(--rail);
-  stroke-width: 2.2;
-  fill: oklch(from var(--rail-soft) l c h / 0.4);
+/* Labels (htmlLabels=true uses foreignObject + html spans). */
+.diagram-host svg .nodeLabel,
+.diagram-host svg .edgeLabel,
+.diagram-host svg foreignObject div {
+  font-family: 'JetBrains Mono', ui-monospace, monospace !important;
+  color: var(--ink) !important;
+  background: transparent !important;
 }
-.node-rect.errored {
-  stroke: var(--clay);
-  stroke-width: 2.2;
-  fill: oklch(from var(--clay-soft) l c h / 0.4);
+
+/* Edge label background — match the paper. */
+.diagram-host svg .edgeLabel rect,
+.diagram-host svg .edgeLabel .label-container {
+  fill: var(--paper) !important;
 }
+
+/* Hide Mermaid's default arrowheads' label box edge sometimes adds */
+.diagram-host svg .edgeLabel foreignObject {
+  background: var(--paper);
+}
+
+/* ------------------------------------------------------------------ */
+/* Animation states                                                   */
+/* ------------------------------------------------------------------ */
+
+.diagram-host svg .node.viz-active rect,
+.diagram-host svg .node.viz-active polygon,
+.diagram-host svg .node.viz-active circle {
+  fill: var(--rail-soft) !important;
+  stroke: var(--rail) !important;
+  stroke-width: 3px !important;
+}
+
+/* Glow on the active node — applied to the whole node group so the
+   drop-shadow covers the rounded rect edges nicely. The pulse animates
+   the glow's intensity instead of the rect's opacity, which keeps the
+   label readable throughout. */
+.diagram-host svg .node.viz-active {
+  animation: vizGlow 1.1s ease-in-out infinite;
+}
+
+@keyframes vizGlow {
+  0%, 100% {
+    filter: drop-shadow(0 0 3px oklch(0.52 0.10 152 / 0.55));
+  }
+  50% {
+    filter: drop-shadow(0 0 14px oklch(0.52 0.10 152 / 0.75));
+  }
+}
+
+.diagram-host svg .node.viz-completed rect,
+.diagram-host svg .node.viz-completed polygon,
+.diagram-host svg .node.viz-completed circle {
+  fill: var(--rail-soft) !important;
+  stroke: var(--rail) !important;
+  stroke-width: 2px !important;
+}
+
+.diagram-host svg .node.viz-errored rect,
+.diagram-host svg .node.viz-errored polygon,
+.diagram-host svg .node.viz-errored circle {
+  fill: var(--clay-soft) !important;
+  stroke: var(--clay) !important;
+  stroke-width: 2.5px !important;
+}
+
+.diagram-host svg .node.viz-reached rect,
+.diagram-host svg .node.viz-reached polygon,
+.diagram-host svg .node.viz-reached circle {
+  fill: var(--rail) !important;
+  stroke: var(--rail) !important;
+  stroke-width: 2.5px !important;
+}
+.diagram-host svg .node.viz-reached .nodeLabel,
+.diagram-host svg .node.viz-reached foreignObject div {
+  color: var(--paper) !important;
+}
+
+.diagram-host svg .node.viz-reached-fail rect,
+.diagram-host svg .node.viz-reached-fail polygon,
+.diagram-host svg .node.viz-reached-fail circle {
+  fill: var(--clay) !important;
+  stroke: var(--clay) !important;
+  stroke-width: 2.5px !important;
+}
+.diagram-host svg .node.viz-reached-fail .nodeLabel,
+.diagram-host svg .node.viz-reached-fail foreignObject div {
+  color: var(--paper) !important;
+}
+
+.diagram-host svg path.viz-traversed {
+  stroke: var(--rail) !important;
+  stroke-width: 2.5px !important;
+}
+.diagram-host svg path.viz-traversed-fail {
+  stroke: var(--clay) !important;
+  stroke-width: 2.5px !important;
+}
+
+/* Animated token that travels along an edge */
+.diagram-host svg circle.token       { fill: var(--rail); }
+.diagram-host svg circle.token.fail  { fill: var(--clay); }
+
 
 /* ------------------------------------------------------------------ */
 /* Bullets                                                            */

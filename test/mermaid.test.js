@@ -21,7 +21,7 @@ describe('Mermaid render (§3.11, acceptance #26-#29)', () => {
       a.wire(sendN.out('net5xx'), failure);
       a.wire(sendN.out('cancelled'), failure);
     });
-    sendMessage.compile();
+    sendMessage.check();
 
     const m = flow('sendMessage', sendMessage).toMermaid();
     expect(m).toContain('flowchart LR');
@@ -58,7 +58,7 @@ describe('Mermaid render (§3.11, acceptance #26-#29)', () => {
       a.wire(start, i);
       a.wire(i.out('ok'), ok);
     });
-    outer.compile();
+    outer.check();
     const m = flow('w', outer).toMermaid();
     expect(m).toContain('n_inner[[inner]]:::subActivity');
   });
@@ -72,14 +72,14 @@ describe('Mermaid render (§3.11, acceptance #26-#29)', () => {
       a.wire(start, fan);
       a.wire(fan.out('done'), ok);
     });
-    wf.compile();
+    wf.check();
     const m = flow('w', wf).toMermaid();
     expect(m).toContain('n_fan{{fan}}:::parallelNode');
   });
 
   it('flow.toMermaid() for top-level Step-Node renders minimal diagram (acceptance #29)', () => {
     const greet = node(() => ({ output: 'done', ctx: {} }), { outputs: ['done'] });
-    greet.compile();
+    greet.check();
     const m = flow('greet', greet).toMermaid();
     expect(m).toContain('flowchart LR');
     expect(m).toContain('start([in])');
@@ -94,7 +94,7 @@ describe('Mermaid render (§3.11, acceptance #26-#29)', () => {
       const ok = a.exit('ok');
       a.wire(start, ok);
     });
-    a.compile();
+    a.check();
     expect(a.toMermaid('greet')).toContain('flowchart LR');
   });
 
@@ -104,7 +104,7 @@ describe('Mermaid render (§3.11, acceptance #26-#29)', () => {
       const ok = a.exit('ok');
       a.wire(start, ok);
     });
-    a.compile();
+    a.check();
     expect(a.toMermaid('x', { direction: 'TB' })).toContain('flowchart TB');
   });
 });

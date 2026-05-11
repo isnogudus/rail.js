@@ -59,7 +59,7 @@ const sendMessage = activity((a) => {
   a.wire(send.out('cancelled'), failure);
 });
 
-sendMessage.compile();
+sendMessage.check();
 const sendMessageFlow = flow('sendMessage', sendMessage);
 
 /* ------------------------------------------------------------------ */
@@ -123,7 +123,7 @@ const loadProfileAndKeys = activity((a) => {
   a.wire(evaluate.out('failed'), failed);
 });
 
-loadProfileAndKeys.compile();
+loadProfileAndKeys.check();
 
 /* ------------------------------------------------------------------ */
 /* §9.6 — exceptionCtx + downstream evaluator                          */
@@ -160,7 +160,7 @@ const robust = activity((a) => {
   a.wire(recover.out('fatal'), failure);
 });
 
-robust.compile();
+robust.check();
 
 /* ------------------------------------------------------------------ */
 /* Run all                                                            */

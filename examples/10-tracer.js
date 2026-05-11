@@ -34,7 +34,7 @@ const wf = activity((a) => {
   a.wire(fan.out('done'), finish);
   a.wire(finish.out('ok'), ok);
 });
-wf.compile();
+wf.check();
 
 const events = [];
 await flow('wf', wf).run({}, {

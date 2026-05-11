@@ -17,19 +17,22 @@ function trivialActivity() {
     a.wire(start, s);
     a.wire(s.out('ok'), ok);
   });
-  a.compile();
+  a.check();
   return a;
 }
 
 describe('flow(name, node) factory (§3.6, §5.4)', () => {
-  it('INVALID_FLOW_NAME (acceptance #17)', () => {
+  it('INVALID_NAME (acceptance #17)', () => {
     const a = trivialActivity();
     try { flow('', a); throw new Error('no throw'); } catch (e) {
       expect(e).toBeInstanceOf(RailBuildError);
-      expect(e.code).toBe('INVALID_FLOW_NAME');
+      expect(e.code).toBe('INVALID_NAME');
     }
     try { flow(/** @type {any} */ (null), a); throw new Error('no throw'); } catch (e) {
-      expect(e.code).toBe('INVALID_FLOW_NAME');
+      expect(e.code).toBe('INVALID_NAME');
+    }
+    try { flow('with.dot', a); throw new Error('no throw'); } catch (e) {
+      expect(e.code).toBe('INVALID_NAME');
     }
   });
 
@@ -40,7 +43,7 @@ describe('flow(name, node) factory (§3.6, §5.4)', () => {
     }
   });
 
-  it('NODE_NOT_COMPILED (acceptance #15)', () => {
+  it('flow.run() auto-checks an unchecked node (acceptance #15)', async () => {
     const a = activity((a) => {
       const start = a.entry('in');
       const ok = a.exit('ok');
@@ -48,10 +51,12 @@ describe('flow(name, node) factory (§3.6, §5.4)', () => {
       a.wire(start, s);
       a.wire(s.out('ok'), ok);
     });
-    try { flow('f', a); throw new Error('no throw'); } catch (e) {
-      expect(e).toBeInstanceOf(RailBuildError);
-      expect(e.code).toBe('NODE_NOT_COMPILED');
-    }
+    expect(a.isChecked()).toBe(false);
+    const f = flow('f', a);
+    expect(a.isChecked()).toBe(false);   // factory does NOT check
+    const r = await f.run({}, silent);
+    expect(a.isChecked()).toBe(true);
+    expect(r.terminus).toBe('ok');
   });
 
   it('returns a stateless plain object (acceptance #32)', async () => {
@@ -83,7 +88,7 @@ describe('flow(name, node) factory (§3.6, §5.4)', () => {
       a.wire(start, s);
       a.wire(s.out('ok'), ok);
     });
-    a.compile();
+    a.check();
     const r = await flow('f', a).run({ y: 2 }, silent);
     expect(r.terminus).toBe('ok');
     expect(r.ctx).toEqual({ y: 2, x: 1 });

@@ -44,7 +44,7 @@ const outer = activity((a) => {
   a.wire(wrapped.out('failure'), failure);
 });
 
-outer.compile();
+outer.check();
 
 console.log('--- happy path ---');
 const ok = await flow('outer', outer).run({ keys: 'k' });

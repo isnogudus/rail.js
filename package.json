@@ -1,6 +1,6 @@
 {
   "name": "@isnogudus/rail.js",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Small workflow library: explicit, validated graphs of named steps. No dependencies, no persistence. Runs in modern Node and browsers.",
   "type": "module",
   "main": "./rail.js",
@@ -12,6 +12,7 @@
     "rail.js",
     "rail/",
     "README.md",
+    "CHANGELOG.md",
     "LICENSE"
   ],
   "scripts": {
@@ -19,7 +20,7 @@
     "test:watch": "vitest",
     "example": "node example.js",
     "examples": "node examples/run-all.js",
-    "site:sync": "rm -rf site/lib && mkdir -p site/lib && cp rail.js site/lib/rail.js && cp -r rail site/lib/rail",
+    "site:sync": "rm -rf site/lib && mkdir -p site/lib && cp rail.js site/lib/rail.js && cp -r rail site/lib/rail && cp docs/rail-spec.md site/rail-spec.md",
     "site:dev": "cd site && python3 -m http.server 8080"
   },
   "engines": {

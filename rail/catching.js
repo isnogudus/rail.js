@@ -4,11 +4,11 @@
  *
  * Produces a new Step-Node that delegates to `stepNode.invoke` and,
  * on a thrown exception, looks up `e.name` in `mapping` to produce
- * a named output instead. `RailRuntimeError` and `RailCompileError`
- * are never mapped.
+ * a named output instead. `RailRuntimeError` and `RailCheckError`
+ * are never mapped — they propagate as graph errors.
  */
 
-import { RailBuildError, RailCompileError, RailRuntimeError } from './errors.js';
+import { RailBuildError, RailCheckError, RailRuntimeError } from './errors.js';
 
 /**
  * @param {object} stepNode      A Step-Node (`railKind: 'step'`).
@@ -54,20 +54,19 @@ export function catching(stepNode, mapping) {
     _inner: stepNode,
     _mapping: mapping,
 
-    compile() {
-      if (!stepNode.compiled()) stepNode.compile();
+    check() {
+      if (!stepNode.isChecked()) stepNode.check();
     },
 
-    compiled() {
-      return stepNode.compiled();
+    isChecked() {
+      return stepNode.isChecked();
     },
 
-    async invoke(name, ctx, runState) {
+    async invoke(name, ctx, runState, local) {
       try {
-        return await stepNode.invoke(name, ctx, runState);
+        return await stepNode.invoke(name, ctx, runState, local);
       } catch (e) {
-        // Library-level errors are never mapped.
-        if (e instanceof RailRuntimeError || e instanceof RailCompileError) {
+        if (e instanceof RailRuntimeError || e instanceof RailCheckError) {
           throw e;
         }
         const errName = /** @type {any} */ (e)?.name;

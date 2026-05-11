@@ -19,7 +19,7 @@ const def = activity((a) => {
   a.wire(start, stepNode);
   a.wire(stepNode.out('ok'), success);
 });
-def.compile();
+def.check();
 
 try {
   await flow('typo', def).run({}, { logger: () => {} });

@@ -39,9 +39,10 @@
   <nav class="nav-links">
     <a href="#problem">Problem</a>
     <a href="#concept">Concept</a>
-    <a href="#compile">Compile</a>
+    <a href="#compile">Check</a>
     <a href="#demo">Live demo</a>
     <a href="#features">Features</a>
+    <a href="./spec.html">Spec</a>
     <a href="https://github.com/isnogudus/rail.js" target="_blank" rel="noopener">GitHub →</a>
   </nav>
 </header>
@@ -75,10 +76,11 @@
 
       <div class="stage" style="padding: 24px 24px 28px;">
         <div class="stage-label">graph('sendMessage')</div>
-        <svg id="hero-diagram" viewBox="0 0 520 340" class="diagram" style="margin-top: 14px;"></svg>
+        <div id="hero-diagram" class="diagram-host" style="margin-top: 14px;"></div>
         <div class="stage-controls">
           <button class="btn active" data-hero="happy">Happy path</button>
           <button class="btn ghost" data-hero="invalid">Invalid input</button>
+          <button class="btn ghost" data-hero="noKeys">No keys</button>
           <button class="btn ghost" data-hero="net5xx">Network error</button>
           <button class="btn ghost" data-hero="throws">Unknown throw</button>
         </div>
@@ -305,40 +307,301 @@
     <div class="stage">
       <div class="stage-label">flow('sendMessage').run(ctx)</div>
 
-      <div class="stage-controls" style="margin-bottom: 18px; margin-top: 10px;">
-        <button class="btn active" data-demo="happy">Happy path</button>
-        <button class="btn ghost" data-demo="invalid">Invalid input</button>
-        <button class="btn ghost" data-demo="net5xx">Network error</button>
-        <button class="btn ghost" data-demo="throws">Unknown throw</button>
+      <div class="tabs">
+        <button class="tab active" data-tab="diagram">Diagram</button>
+        <button class="tab"        data-tab="source">Source</button>
       </div>
 
-      <svg id="demo-diagram" viewBox="0 0 720 360" class="diagram"></svg>
+      <div class="tab-panel active" data-tab="diagram">
+        <div class="stage-controls" style="margin-bottom: 18px;">
+          <button class="btn active" data-demo="happy">Happy path</button>
+          <button class="btn ghost" data-demo="invalid">Invalid input</button>
+          <button class="btn ghost" data-demo="noKeys">No keys</button>
+          <button class="btn ghost" data-demo="net5xx">Network error</button>
+          <button class="btn ghost" data-demo="throws">Unknown throw</button>
+        </div>
 
-      <div class="demo-grid">
-        <div>
-          <div class="compare-label">Input</div>
-          <pre class="result" id="demo-input"></pre>
+        <div id="demo-diagram" class="diagram-host"></div>
+
+        <div class="demo-grid">
+          <div>
+            <div class="compare-label">Input</div>
+            <pre class="result" id="demo-input"></pre>
+          </div>
+          <div>
+            <div class="compare-label">Trace</div>
+            <div class="trace" id="demo-trace"></div>
+          </div>
+          <div>
+            <div class="compare-label">Result</div>
+            <pre class="result" id="demo-result"></pre>
+          </div>
         </div>
-        <div>
-          <div class="compare-label">Trace</div>
-          <div class="trace" id="demo-trace"></div>
-        </div>
-        <div>
-          <div class="compare-label">Result</div>
-          <pre class="result" id="demo-result"></pre>
-        </div>
+      </div>
+
+      <div class="tab-panel" data-tab="source">
+        <pre class="code"><code id="demo-source"></code></pre>
       </div>
     </div>
   </div>
 </section>
 
 <!-- ====================================================================
-     05 / FEATURES
+     05 / SUB-ACTIVITY COMPOSITION
+     ==================================================================== -->
+<section id="example-sub">
+  <div class="wrap">
+    <div class="sec-head">
+      <div class="sec-num">05 / Sub-activity composition</div>
+      <div>
+        <h2 class="sec-title">A flow that wraps a flow.</h2>
+        <p class="sec-sub">
+          An Activity is a Rail-Node, so it can be embedded as a sub-node in
+          another Activity. The outer's <span class="mono">compile()</span>
+          recursively compiles the inner; sub-step names appear in the trace
+          with a dotted prefix.
+        </p>
+      </div>
+    </div>
+
+    <div class="stage">
+      <div class="stage-label">flow('outer').run(ctx)</div>
+
+      <div class="tabs">
+        <button class="tab active" data-tab="diagram">Diagram</button>
+        <button class="tab"        data-tab="source">Source</button>
+      </div>
+
+      <div class="tab-panel active" data-tab="diagram">
+        <div class="stage-controls" style="margin-bottom: 18px;">
+          <button class="btn active" data-scenario="happy">Happy path</button>
+          <button class="btn ghost"  data-scenario="skip">Preflight skip</button>
+          <button class="btn ghost"  data-scenario="noKeys">Inner: no keys</button>
+        </div>
+
+        <div id="sub-diagram" class="diagram-host"></div>
+
+        <div class="demo-grid">
+          <div><div class="compare-label">Input</div><pre class="result" id="sub-input"></pre></div>
+          <div><div class="compare-label">Trace</div><div class="trace" id="sub-trace"></div></div>
+          <div><div class="compare-label">Result</div><pre class="result" id="sub-result"></pre></div>
+        </div>
+      </div>
+
+      <div class="tab-panel" data-tab="source">
+        <pre class="code"><code id="sub-source"></code></pre>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ====================================================================
+     06 / PARALLEL + EVALUATE
+     ==================================================================== -->
+<section id="example-par">
+  <div class="wrap">
+    <div class="sec-head">
+      <div class="sec-num">06 / Parallel + evaluate</div>
+      <div>
+        <h2 class="sec-title">Concurrent branches, one decision point.</h2>
+        <p class="sec-sub">
+          <span class="mono">parallel({ profile, keys })</span> runs both branches
+          concurrently via <span class="mono">Promise.allSettled</span>. The
+          downstream <span class="mono">evaluate</span> step consumes a typed
+          <span class="mono">parallel-results</span> ctx and decides the output.
+        </p>
+      </div>
+    </div>
+
+    <div class="stage">
+      <div class="stage-label">flow('loadProfileAndKeys').run(ctx)</div>
+
+      <div class="tabs">
+        <button class="tab active" data-tab="diagram">Diagram</button>
+        <button class="tab"        data-tab="source">Source</button>
+      </div>
+
+      <div class="tab-panel active" data-tab="diagram">
+        <div class="stage-controls" style="margin-bottom: 18px;">
+          <button class="btn active" data-scenario="both">Both succeed</button>
+          <button class="btn ghost"  data-scenario="failure">Profile branch fails</button>
+        </div>
+
+        <div id="par-diagram" class="diagram-host"></div>
+
+        <div class="demo-grid">
+          <div><div class="compare-label">Input</div><pre class="result" id="par-input"></pre></div>
+          <div><div class="compare-label">Trace</div><div class="trace" id="par-trace"></div></div>
+          <div><div class="compare-label">Result</div><pre class="result" id="par-result"></pre></div>
+        </div>
+      </div>
+
+      <div class="tab-panel" data-tab="source">
+        <pre class="code"><code id="par-source"></code></pre>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ====================================================================
+     07 / EXCEPTION CTX + RECOVER
+     ==================================================================== -->
+<section id="example-exc">
+  <div class="wrap">
+    <div class="sec-head">
+      <div class="sec-num">07 / exceptionCtx + recover</div>
+      <div>
+        <h2 class="sec-title">Errors as data, decisions as graph edges.</h2>
+        <p class="sec-sub">
+          When a step catches an exception that the graph should react to, it
+          wraps it via <span class="mono">exceptionCtx(err, ctx)</span> and
+          forwards on a named output. The downstream
+          <span class="mono">recover</span> step inspects the typed-ctx and
+          either retries or escalates — all visible in the topology.
+        </p>
+      </div>
+    </div>
+
+    <div class="stage">
+      <div class="stage-label">flow('robust').run(ctx)</div>
+
+      <div class="tabs">
+        <button class="tab active" data-tab="diagram">Diagram</button>
+        <button class="tab"        data-tab="source">Source</button>
+      </div>
+
+      <div class="tab-panel active" data-tab="diagram">
+        <div class="stage-controls" style="margin-bottom: 18px;">
+          <button class="btn active" data-scenario="happy">Happy path</button>
+          <button class="btn ghost"  data-scenario="recoverable">Timeout (recoverable)</button>
+          <button class="btn ghost"  data-scenario="fatal">Fatal error</button>
+        </div>
+
+        <div id="exc-diagram" class="diagram-host"></div>
+
+        <div class="demo-grid">
+          <div><div class="compare-label">Input</div><pre class="result" id="exc-input"></pre></div>
+          <div><div class="compare-label">Trace</div><div class="trace" id="exc-trace"></div></div>
+          <div><div class="compare-label">Result</div><pre class="result" id="exc-result"></pre></div>
+        </div>
+      </div>
+
+      <div class="tab-panel" data-tab="source">
+        <pre class="code"><code id="exc-source"></code></pre>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ====================================================================
+     08 / MULTI-INPUT + CONVERGENCE
+     ==================================================================== -->
+<section id="example-mi">
+  <div class="wrap">
+    <div class="sec-head">
+      <div class="sec-num">08 / Multi-input + convergence</div>
+      <div>
+        <h2 class="sec-title">Same node, different entry — and the step knows.</h2>
+        <p class="sec-sub">
+          A node can declare multiple input ports. Two wires that converge into
+          the same node-input are valid by design (§7.5). When a node has
+          distinct inputs, the activated port is exposed to the step as
+          <span class="mono">runInfo.input</span> — the step can branch on it.
+        </p>
+      </div>
+    </div>
+
+    <div class="stage">
+      <div class="stage-label">flow('multi-input').run(ctx)</div>
+
+      <div class="tabs">
+        <button class="tab active" data-tab="diagram">Diagram</button>
+        <button class="tab"        data-tab="source">Source</button>
+      </div>
+
+      <div class="tab-panel active" data-tab="diagram">
+        <div class="stage-controls" style="margin-bottom: 18px;">
+          <button class="btn active" data-scenario="retry">Via retry input</button>
+          <button class="btn ghost"  data-scenario="skip">Via skip input</button>
+        </div>
+
+        <div id="mi-diagram" class="diagram-host"></div>
+
+        <div class="demo-grid">
+          <div><div class="compare-label">Input</div><pre class="result" id="mi-input"></pre></div>
+          <div><div class="compare-label">Trace</div><div class="trace" id="mi-trace"></div></div>
+          <div><div class="compare-label">Result</div><pre class="result" id="mi-result"></pre></div>
+        </div>
+      </div>
+
+      <div class="tab-panel" data-tab="source">
+        <pre class="code"><code id="mi-source"></code></pre>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ====================================================================
+     09 / LOOP (CYCLE + local)
+     ==================================================================== -->
+<section id="example-loop">
+  <div class="wrap">
+    <div class="sec-head">
+      <div class="sec-num">09 / Loop · local · cycle</div>
+      <div>
+        <h2 class="sec-title">A wire that loops back, terminated by step logic.</h2>
+        <p class="sec-sub">
+          Cycles in the wire graph are valid topology (§7.4).
+          <span class="mono">send</span> performs the flaky work;
+          <span class="mono">decide</span> counts retries in its
+          position-local workspace <span class="mono">local</span> —
+          read as a parameter, written via the
+          <span class="mono">StepReturn</span> — and either routes back
+          to <span class="mono">send</span> via
+          <span class="mono">decide.out('retry')</span> or gives up. The
+          library has no max-cycle counter; what makes the loop terminate
+          is the step's own logic.
+        </p>
+      </div>
+    </div>
+
+    <div class="stage">
+      <div class="stage-label">flow('retry-loop').run(ctx)</div>
+
+      <div class="tabs">
+        <button class="tab active" data-tab="diagram">Diagram</button>
+        <button class="tab"        data-tab="source">Source</button>
+      </div>
+
+      <div class="tab-panel active" data-tab="diagram">
+        <div class="stage-controls" style="margin-bottom: 18px;">
+          <button class="btn active" data-scenario="succeed">Succeeds on 3rd try</button>
+          <button class="btn ghost"  data-scenario="giveup">Gives up after maxTries</button>
+        </div>
+
+        <div id="loop-diagram" class="diagram-host"></div>
+
+        <div class="demo-grid">
+          <div><div class="compare-label">Input</div><pre class="result" id="loop-input"></pre></div>
+          <div><div class="compare-label">Trace</div><div class="trace" id="loop-trace"></div></div>
+          <div><div class="compare-label">Result</div><pre class="result" id="loop-result"></pre></div>
+        </div>
+      </div>
+
+      <div class="tab-panel" data-tab="source">
+        <pre class="code"><code id="loop-source"></code></pre>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ====================================================================
+     10 / FEATURES
      ==================================================================== -->
 <section id="features">
   <div class="wrap">
     <div class="sec-head">
-      <div class="sec-num">05 / Features</div>
+      <div class="sec-num">10 / Features</div>
       <div>
         <h2 class="sec-title">Small surface, sharp edges where they matter.</h2>
       </div>

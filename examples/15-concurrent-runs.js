@@ -19,7 +19,7 @@ const slowAdder = activity((a) => {
   a.wire(start, add);
   a.wire(add.out('ok'), ok);
 });
-slowAdder.compile();
+slowAdder.check();
 
 const f = flow('slowAdder', slowAdder);
 

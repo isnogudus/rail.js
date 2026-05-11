@@ -2,11 +2,19 @@
  * `flow(name, node)` — runtime wrapper. See spec §2 (Flow), §3.6, §6.
  *
  * A flow holds a top-level Rail-Node and a top-level name. The
- * factory returns a plain stateless object whose only responsibility
- * is to allocate a fresh run-state per invocation of `run(...)`.
+ * factory returns a stateless object whose only responsibility is
+ * to allocate a fresh run-state per invocation of `run(...)` and to
+ * dispatch the top-level invoke. The flow does NOT pre-check the
+ * node at factory time; the first `run(...)` triggers `node.check()`
+ * if the node is unchecked.
  */
 
-import { RailBuildError, RailCompileError, RailRuntimeError } from './errors.js';
+import {
+  RailBuildError,
+  RailCheckError,
+  RailRuntimeError,
+  validateName,
+} from './errors.js';
 import { isRailNode } from './ctx.js';
 import {
   emitTracer,
@@ -23,23 +31,11 @@ import { renderNodeToMermaid } from './mermaid.js';
  * @returns {object} A flow object with `name`, `node`, `run`, and `toMermaid`.
  */
 export function flow(name, node) {
-  if (typeof name !== 'string' || name.length === 0) {
-    throw new RailBuildError(
-      'INVALID_FLOW_NAME',
-      `flow(name, node): name must be a non-empty string, got ${typeof name === 'string' ? '""' : typeof name}`
-    );
-  }
+  validateName(name, 'flow(name, node)');
   if (!isRailNode(node)) {
     throw new RailBuildError(
       'NOT_A_NODE',
       `flow(name, node): node must be a Rail-Node`,
-      { name }
-    );
-  }
-  if (!node.compiled()) {
-    throw new RailBuildError(
-      'NODE_NOT_COMPILED',
-      `flow(name, node): node must be compiled before use; call node.compile() first`,
       { name }
     );
   }
@@ -51,11 +47,17 @@ export function flow(name, node) {
     /**
      * Executes the held node with a fresh run-state.
      *
+     * If the held node is not yet checked, calls `node.check()` first.
+     * A `RailCheckError` from that call propagates out of `run(...)`
+     * before any step executes.
+     *
      * @param {object} [initialCtx]
      * @param {object} [opts]
      * @returns {Promise<{ctx: object, trace: object[], terminus: string}>}
      */
     async run(initialCtx = {}, opts = {}) {
+      if (!node.isChecked()) node.check();
+
       const runState = createRunState(opts, name);
       const shared = runState.shared;
       shared.runStartTime = now();
@@ -73,16 +75,13 @@ export function flow(name, node) {
       let error;
       try {
         result = await runStep(node, name, initialCtx, runState, {
-          recordToTrace: node.railKind !== 'activity',
-          forkActivity: false,
+          topLevel: true,
         });
       } catch (e) {
         error = e;
       }
 
       if (error !== undefined) {
-        // runStep already classified non-lib errors into RailRuntimeError;
-        // ensure trace + ctx are populated on lib errors that lacked them.
         if (error instanceof RailRuntimeError) {
           if (!error.flow) error.flow = name;
           if (!error.trace || error.trace.length === 0) error.trace = shared.trace;
@@ -116,11 +115,7 @@ export function flow(name, node) {
     },
 
     /**
-     * Renders the held node as Mermaid. Bound at module load time
-     * (see `rail.js`).
-     *
-     * @param {object} [opts]
-     * @returns {string}
+     * Renders the held node as Mermaid.
      */
     toMermaid(opts) {
       return renderNodeToMermaid(node, name, opts);

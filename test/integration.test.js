@@ -50,7 +50,7 @@ describe('§9.2 sendMessage with catching (acceptance #1)', () => {
       a.wire(send.out('net5xx'), failure);
       a.wire(send.out('cancelled'), failure);
     });
-    sendMessage.compile();
+    sendMessage.check();
     return sendMessage;
   }
 
@@ -110,8 +110,8 @@ describe('§9.3 sub-activity composition (acceptance #2)', () => {
       a.wire(wrapped.out('success'), success);
       a.wire(wrapped.out('failure'), failure);
     });
-    outer.compile();
-    expect(inner.compiled()).toBe(true);
+    outer.check();
+    expect(inner.isChecked()).toBe(true);
 
     const r = await flow('outer', outer).run({}, silent);
     expect(r.terminus).toBe('success');
@@ -175,7 +175,7 @@ describe('§9.5 parallel + evaluate (acceptance #3)', () => {
       a.wire(evaluate.out('ok'), ok);
       a.wire(evaluate.out('failed'), failed);
     });
-    wf.compile();
+    wf.check();
     return wf;
   }
 
@@ -213,7 +213,7 @@ describe('§9.5 parallel + evaluate (acceptance #3)', () => {
       a.wire(start, fan);
       a.wire(fan.out('done'), ok);
     });
-    wf.compile();
+    wf.check();
     try {
       await flow('wf', wf).run({}, silent);
       throw new Error('expected throw');
@@ -259,7 +259,7 @@ describe('§9.6 exceptionCtx + downstream evaluator (acceptance #4)', () => {
       a.wire(recover.out('ok'), success);
       a.wire(recover.out('fatal'), failure);
     });
-    robust.compile();
+    robust.check();
 
     const ok = await flow('r', robust).run({ kind: 'ok' }, silent);
     expect(ok.terminus).toBe('success');
@@ -281,7 +281,7 @@ describe('§9.7 top-level Step-Node (acceptance #5)', () => {
       output: 'done',
       ctx: { ...ctx, msg: `Hi ${ctx.name}` },
     }), { outputs: ['done'] });
-    greet.compile();
+    greet.check();
     const r = await flow('greet', greet).run({ name: 'M' }, silent);
     expect(r.terminus).toBe('done');
     expect(r.ctx.msg).toBe('Hi M');
@@ -292,8 +292,8 @@ describe('§9.8 reusing a node under multiple names (acceptance #6)', () => {
   it('shared step is compiled exactly once', () => {
     const validateNode = node(() => 'ok', { outputs: ['ok'] });
     let compileCount = 0;
-    const orig = validateNode.compile.bind(validateNode);
-    validateNode.compile = () => { compileCount++; orig(); };
+    const orig = validateNode.check.bind(validateNode);
+    validateNode.check = () => { compileCount++; orig(); };
 
     const flowA = activity((a) => {
       const s = a.entry('in');
@@ -302,8 +302,8 @@ describe('§9.8 reusing a node under multiple names (acceptance #6)', () => {
       a.wire(s, v);
       a.wire(v.out('ok'), ok);
     });
-    flowA.compile();
-    expect(validateNode.compiled()).toBe(true);
+    flowA.check();
+    expect(validateNode.isChecked()).toBe(true);
     const compileCountAfterA = compileCount;
 
     // Reusing the same node under different names in another activity.
@@ -316,13 +316,13 @@ describe('§9.8 reusing a node under multiple names (acceptance #6)', () => {
       a.wire(v1.out('ok'), v2);
       a.wire(v2.out('ok'), ok);
     });
-    flowB.compile();
+    flowB.check();
 
     // The actual `_compiled` work happens only once: subsequent
     // recursive `compile()` calls short-circuit via the flag. The
     // wrapper above counts every call regardless, so just verify the
     // node is compiled and usable.
-    expect(validateNode.compiled()).toBe(true);
+    expect(validateNode.isChecked()).toBe(true);
     expect(compileCount).toBeGreaterThanOrEqual(compileCountAfterA);
   });
 });
@@ -336,7 +336,7 @@ describe('§9.9 graph error vs domain error (acceptance #7)', () => {
       a.wire(start, stepNode);
       a.wire(stepNode.out('ok'), success);
     });
-    def.compile();
+    def.check();
     try {
       await flow('typo', def).run({}, silent);
       throw new Error('expected throw');

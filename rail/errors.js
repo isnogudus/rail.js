@@ -1,8 +1,12 @@
 /**
  * Error classes for rail.js. See spec §5 and §7.
  *
- * - `RailBuildError` — synchronous validation at build/wire time (per §3.3, §5.4).
- * - `RailCompileError` — three-phase activity validation (§7).
+ * - `RailBuildError` — synchronous validation at builder time (§7.1, §5.4).
+ *   Raised by builder methods (`a.wire`, `a.addNode`, ...), factories
+ *   (`node`, `parallel`, `flow`, `catching`), and handle methods
+ *   (`.out`, `.in`). The stack trace points at the offending line.
+ * - `RailCheckError` — two-phase activity check (§7.2-7.4) and node-level
+ *   structural checks. Carries a `phase` and a list of `errors`.
  * - `RailRuntimeError` — failures at run-time (§5.3).
  */
 
@@ -29,22 +33,23 @@ export class RailBuildError extends Error {
 }
 
 /**
- * Compile-time validation error.
+ * Post-builder validation error.
  *
- * Raised by `Activity.compile()` when one of the three phases
- * (declaration / completeness / topology) reports issues.
+ * Raised by `node.check()` when one of the phases (completeness /
+ * topology for activities; structural for step-/parallel-nodes)
+ * reports issues.
  *
  * @extends Error
  */
-export class RailCompileError extends Error {
+export class RailCheckError extends Error {
   /**
    * @param {'declaration'|'completeness'|'topology'} phase
    * @param {Array<{code: string, suggestion?: string} & Record<string, unknown>>} errors
    * @param {string} [message]
    */
   constructor(phase, errors, message) {
-    super(message ?? `Activity compile failed in phase '${phase}' with ${errors.length} error(s)`);
-    this.name = 'RailCompileError';
+    super(message ?? `Node check failed in phase '${phase}' with ${errors.length} error(s)`);
+    this.name = 'RailCheckError';
     this.phase = phase;
     this.errors = errors;
   }
@@ -76,5 +81,37 @@ export class RailRuntimeError extends Error {
     this.trace = trace ?? [];
     this.ctx = ctx ?? {};
     if (cause !== undefined) this.cause = cause;
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* Shared helpers                                                     */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Validates a user-supplied name (node, port, entry, exit, branch,
+ * flow). Raises `RailBuildError(INVALID_NAME)` synchronously if the
+ * name is empty, whitespace-only, or contains a reserved character
+ * (`.` or `:`). See spec §3.3.
+ *
+ * @param {unknown} name
+ * @param {string} context  Short description for error messages (e.g.
+ *                          "a.entry(name)", "node output").
+ * @param {Record<string, unknown>} [fields] Extra fields on the error.
+ */
+export function validateName(name, context, fields = {}) {
+  if (typeof name !== 'string' || name.length === 0 || /^\s*$/.test(name)) {
+    throw new RailBuildError(
+      'INVALID_NAME',
+      `${context}: name must be a non-empty, non-whitespace string`,
+      { name, ...fields }
+    );
+  }
+  if (name.includes('.') || name.includes(':')) {
+    throw new RailBuildError(
+      'INVALID_NAME',
+      `${context}: name "${name}" contains reserved character (".", ":")`,
+      { name, ...fields }
+    );
   }
 }

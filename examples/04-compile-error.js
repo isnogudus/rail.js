@@ -5,7 +5,7 @@
  * wired). All issues in a phase are collected and reported together.
  */
 
-import { activity, node, RailCompileError } from '../rail.js';
+import { activity, node, RailCheckError } from '../rail.js';
 
 const broken = activity((a) => {
   const start = a.entry('in');
@@ -18,9 +18,9 @@ const broken = activity((a) => {
 });
 
 try {
-  broken.compile();
+  broken.check();
 } catch (e) {
-  if (e instanceof RailCompileError) {
+  if (e instanceof RailCheckError) {
     console.log(`Phase: ${e.phase}`);
     for (const issue of e.errors) {
       console.log('  -', JSON.stringify(issue));

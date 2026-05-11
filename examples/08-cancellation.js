@@ -23,7 +23,7 @@ const upload = activity((a) => {
   ));
 
   // Simulates a long upload that polls the signal.
-  const send = a.addNode('send', node(async (ctx, runInfo) => {
+  const send = a.addNode('send', node(async (ctx, _local, runInfo) => {
     for (let i = 0; i < 50; i++) {
       if (runInfo.signal?.aborted) return 'cancelled';
       await new Promise((r) => setTimeout(r, 5));
@@ -44,7 +44,7 @@ const upload = activity((a) => {
   a.wire(send.out('failed'),      failure);
   a.wire(cleanup.out('done'),     cancelled);
 });
-upload.compile();
+upload.check();
 
 const ctrl = new AbortController();
 const promise = flow('upload', upload).run(

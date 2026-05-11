@@ -68,7 +68,7 @@ const router = activity((a) => {
   a.wire(handle.out('err'),    errorEval);
   a.wire(errorEval.out('ok'),  errored);
 });
-router.compile();
+router.check();
 
 const f = flow('router', router);
 const silent = { logger: () => {} };

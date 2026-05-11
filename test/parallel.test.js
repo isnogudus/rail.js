@@ -5,7 +5,7 @@ import {
   parallel,
   flow,
   isParallelCtx,
-  RailCompileError,
+  RailCheckError,
   RailRuntimeError,
 } from '../rail.js';
 
@@ -43,7 +43,7 @@ describe('parallel(branches) (§3.7)', () => {
       a.wire(fan.out('done'), eval_);
       a.wire(eval_.out('ok'), ok);
     });
-    wf.compile();
+    wf.check();
 
     const r = await flow('wf', wf).run({ seed: 1 }, silent);
     expect(r.terminus).toBe('ok');
@@ -72,7 +72,7 @@ describe('parallel(branches) (§3.7)', () => {
       a.wire(start, fan);
       a.wire(fan.out('done'), ok);
     });
-    wf.compile();
+    wf.check();
 
     try {
       await flow('wf', wf).run({}, silent);
@@ -97,7 +97,7 @@ describe('parallel(branches) (§3.7)', () => {
       a.wire(start, fan);
       a.wire(fan.out('done'), ok);
     });
-    expect(() => wf.compile()).toThrow(RailCompileError);
+    expect(() => wf.check()).toThrow(RailCheckError);
   });
 
   it('compound branch trace entries use parallelName.branchKey form (acceptance #34)', async () => {
@@ -118,7 +118,7 @@ describe('parallel(branches) (§3.7)', () => {
       a.wire(fan.out('done'), merge);
       a.wire(merge.out('ok'), ok);
     });
-    wf.compile();
+    wf.check();
 
     const r = await flow('wf', wf).run({}, silent);
     const stepNames = r.trace.map((e) => e.step);
@@ -143,7 +143,7 @@ describe('parallel(branches) (§3.7)', () => {
       a.wire(start, fan);
       a.wire(fan.out('done'), ok);
     });
-    wf.compile();
+    wf.check();
 
     const r = await flow('wf', wf).run({}, silent);
     const xEntry = r.trace.find((e) => e.step === 'fan.b.x');

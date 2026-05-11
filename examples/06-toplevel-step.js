@@ -12,7 +12,7 @@ const greet = node(async (ctx) => ({
   ctx: { ...ctx, msg: `Hi ${ctx.name}` },
 }), { outputs: ['done'] });
 
-greet.compile();
+greet.check();
 
 const r = await flow('greet', greet).run({ name: 'Markus' });
 console.log('terminus:', r.terminus);

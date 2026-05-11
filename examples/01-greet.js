@@ -19,7 +19,7 @@ const greet = activity((a) => {
   a.wire(hello.out('success'), success);
 });
 
-greet.compile();
+greet.check();
 
 const r = await flow('greet', greet).run({ name: 'Markus' });
 console.log('terminus:', r.terminus);

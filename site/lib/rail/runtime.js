@@ -1,17 +1,17 @@
 /**
  * Runtime layer: shared utilities, run-state allocation, kill/counter
  * checks, tracer/logger plumbing, and the generic step-invocation
- * wrapper used by both flow.run (top-level) and the activity
+ * wrapper used by both `flow.run` (top-level) and the activity
  * step-execution loop. See spec §6.
  */
 
-import { RailCompileError, RailRuntimeError } from './errors.js';
+import { RailCheckError, RailRuntimeError } from './errors.js';
 
-/**
- * High-resolution time. `performance.now()` if available, else `Date.now()`.
- *
- * @returns {number}
- */
+/* ------------------------------------------------------------------ */
+/* Basics                                                             */
+/* ------------------------------------------------------------------ */
+
+/** High-resolution time. `performance.now()` if available, else `Date.now()`. */
 export function now() {
   if (typeof performance !== 'undefined' && typeof performance.now === 'function') {
     return performance.now();
@@ -19,11 +19,7 @@ export function now() {
   return Date.now();
 }
 
-/**
- * Round to two decimals.
- * @param {number} n
- * @returns {number}
- */
+/** Round to two decimals. */
 export function round2(n) {
   return Math.round(n * 100) / 100;
 }
@@ -31,9 +27,6 @@ export function round2(n) {
 /**
  * Combines multiple AbortSignals into one that aborts as soon as any
  * input aborts. Returns `undefined` if no inputs are given.
- *
- * Manual implementation; equivalent to `AbortSignal.any([...])` but
- * works on any environment with AbortController.
  *
  * @param {Array<AbortSignal|undefined>} signals
  * @returns {AbortSignal|undefined}
@@ -60,12 +53,13 @@ export function combineSignals(signals) {
   return ac.signal;
 }
 
+/* ------------------------------------------------------------------ */
+/* Logger + tracer defaults                                           */
+/* ------------------------------------------------------------------ */
+
 /**
  * Default logger factory. Closes over the flow name and produces a
  * single console line per trace entry. See spec §6.6.
- *
- * @param {string} flowName
- * @returns {(entry: object) => void}
  */
 export function createDefaultLogger(flowName) {
   return function defaultLogger(entry) {
@@ -73,9 +67,10 @@ export function createDefaultLogger(flowName) {
     const indent = '  '.repeat(entry.depth);
     const stepCol = (indent + entry.step).padEnd(20);
     const ms = entry.duration.toFixed(2) + 'ms';
+    const suffix = entry.invocation && entry.invocation > 1 ? ` #${entry.invocation}` : '';
     const tail = entry.threw
-      ? ` -> (lib error: ${entry.error?.code ?? entry.error?.name ?? 'UNKNOWN'})`
-      : ` -> ${entry.output}`;
+      ? ` -> (lib error: ${entry.error?.code ?? entry.error?.name ?? 'UNKNOWN'})${suffix}`
+      : ` -> ${entry.output}${suffix}`;
     console.log(`[rail:${flowName}] ${tag}   ${stepCol} (${ms})${tail}`);
   };
 }
@@ -83,12 +78,25 @@ export function createDefaultLogger(flowName) {
 /** No-op tracer. Used when `opts.tracer` is not provided. */
 export function noopTracer() {}
 
+/* ------------------------------------------------------------------ */
+/* Run-state allocation                                               */
+/* ------------------------------------------------------------------ */
+
 /**
- * Allocates a fresh run-state from `opts` and a flow name. See spec §6.1.
+ * Allocates a fresh run-state from `opts` and a flow name.
+ * See spec §6.1.
+ *
+ * The run-state is two-layered:
+ *   - Per-fork slots (`depth`, `currentInput`, `path`) are scalar and
+ *     copied on `{ ...runState }`. Sub-activities and parallel
+ *     branches receive a fork that shadows these.
+ *   - The `shared` sub-object is held by reference; the same object
+ *     across every fork in the run. It carries the step counter,
+ *     signals, logger, tracer, flow name, `cycleCounters`,
+ *     `localState`, and the trace buffer.
  *
  * @param {object} opts
  * @param {string} flowName
- * @returns {object}
  */
 export function createRunState(opts, flowName) {
   const userSignal = opts?.signal;
@@ -105,26 +113,32 @@ export function createRunState(opts, flowName) {
   return {
     depth: 0,
     currentInput: 'in',
+    path: '',
+    // combinedSignal is per-fork: parallel branches override it with
+    // their own (folding in the parallel-node's internal AbortController).
     combinedSignal: combined,
     shared: {
-      stepCounter: 0,
-      maxSteps: opts?.maxSteps ?? 1000,
+      stepCounter:    0,
+      maxSteps:       opts?.maxSteps ?? 1000,
       killSignal,
-      logger: opts?.logger ?? createDefaultLogger(flowName),
-      tracer: opts?.tracer ?? noopTracer,
+      logger:         opts?.logger ?? createDefaultLogger(flowName),
+      tracer:         opts?.tracer ?? noopTracer,
       flowName,
-      trace: [],
-      runStartTime: 0,
+      cycleCounters:  new Map(),
+      localState:     new Map(),
+      trace:          [],
+      runStartTime:   0,
     },
   };
 }
 
+/* ------------------------------------------------------------------ */
+/* Tracer / logger dispatch                                           */
+/* ------------------------------------------------------------------ */
+
 /**
  * Calls the configured tracer with `event`. Wraps any throw as
  * `RailRuntimeError(TRACER_FAILED)`.
- *
- * @param {object} shared
- * @param {object} event
  */
 export function emitTracer(shared, event) {
   try {
@@ -146,9 +160,6 @@ export function emitTracer(shared, event) {
 /**
  * Calls the configured logger with a TraceEntry. Wraps any throw as
  * `RailRuntimeError(LOGGER_FAILED)`.
- *
- * @param {object} shared
- * @param {object} entry
  */
 export function callLogger(shared, entry) {
   try {
@@ -167,15 +178,17 @@ export function callLogger(shared, entry) {
   }
 }
 
+/* ------------------------------------------------------------------ */
+/* Pre-execution checks                                               */
+/* ------------------------------------------------------------------ */
+
 /**
  * Pre-execution checks (§6.2 steps 3 & 4).
  *
- * Throws `RailRuntimeError(KILLED)` if the kill switch is set and aborted.
- * Throws `RailRuntimeError(STEP_LIMIT_EXCEEDED)` if `++stepCounter` would exceed maxSteps.
- * Otherwise increments the counter.
- *
- * @param {object} runState
- * @param {object} ctx
+ * Throws `RailRuntimeError(KILLED)` if the kill switch is set and
+ * aborted. Throws `RailRuntimeError(STEP_LIMIT_EXCEEDED)` if the
+ * next step would exceed `maxSteps`. Otherwise increments the
+ * counter.
  */
 export function checkKillAndLimit(runState, ctx) {
   const shared = runState.shared;
@@ -200,65 +213,114 @@ export function checkKillAndLimit(runState, ctx) {
   shared.stepCounter++;
 }
 
-/** True iff value is a RailRuntimeError or RailCompileError instance. */
+/* ------------------------------------------------------------------ */
+/* Path / invocation / local helpers                                  */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Computes the full dotted path for invoking a sub-node `name` from
+ * scope at `parentPath`. See spec §6.1.
+ */
+export function joinPath(parentPath, name) {
+  return parentPath === '' ? name : `${parentPath}.${name}`;
+}
+
+/* ------------------------------------------------------------------ */
+/* Step invocation wrapper                                            */
+/* ------------------------------------------------------------------ */
+
 function isLibError(e) {
-  return e instanceof RailRuntimeError || e instanceof RailCompileError;
+  return e instanceof RailRuntimeError || e instanceof RailCheckError;
 }
 
 /**
- * Generic step-invocation wrapper. Used by:
- *   - flow.run for the top-level node (recordToTrace=false, forkActivity=false)
- *   - Activity's step-execution loop for each visited sub-node (recordToTrace=true, forkActivity=true)
+ * Generic step-invocation wrapper.
+ *
+ * Used by:
+ *   - `flow.run` for the top-level node (no trace entry for activities;
+ *     name is the flow's top-level name).
+ *   - Activity's step-execution loop for each visited sub-node.
  *
  * Steps:
- *   1. Kill + counter check (§6.2 steps 3, 4).
- *   2. Emit `step-start` tracer event.
- *   3. Call `node.invoke(name, ctx, invokeRunState)`. If `forkActivity` is true and the node is
- *      an Activity, the runState is forked with `depth + 1` and `parentDepth = depth` before
- *      passing to invoke — implements the per-fork run-state semantics from §6.1.
- *   4. On throw: classify and re-throw or wrap; emit `step-throw`; optionally append entry + log.
- *   5. On return: validate invoke contract shape and declared output.
- *   6. Emit `step-end`; optionally append entry + log.
+ *   1. Kill + step-counter check (§6.2 steps 3, 4).
+ *   2. Compute fullPath, update cycleCounters, read local (§6.2 step 5).
+ *   3. Emit `step-start` with `invocation` and `local`.
+ *   4. Call `node.invoke(name, ctx, invokeRunState, local)`. For
+ *      Activity and Parallel-Node, the run-state is forked with
+ *      `path = fullPath` (and depth+1 for Activities) so that inner
+ *      steps see the correct path prefix.
+ *   5. On throw: classify and wrap; emit `step-throw`; append trace
+ *      entry (if `recordToTrace`).
+ *   6. On return: validate output is declared; store returned local
+ *      under fullPath; emit `step-end`; append trace entry (if
+ *      `recordToTrace`).
  *
  * @param {object} node          The Rail-Node to invoke.
- * @param {string} name          The compound name to use in events / trace.
+ * @param {string} name          The node's local name (or top-level
+ *                               name for `flow.run`).
  * @param {object} ctx           The running ctx entering the node.
  * @param {object} runState      The current run-state.
- * @param {{recordToTrace?: boolean, forkActivity?: boolean}} [opts]
- * @returns {Promise<{output: string, ctx?: object}>}
+ * @param {{recordToTrace?: boolean, topLevel?: boolean}} [opts]
+ * @returns {Promise<{output: string, ctx?: object, local?: object}>}
  */
 export async function runStep(node, name, ctx, runState, opts = {}) {
-  const recordToTrace = opts.recordToTrace ?? true;
-  const forkActivity = opts.forkActivity ?? true;
+  const topLevel = opts.topLevel ?? false;
+  // Top-level Activity: the activity emits its own activity-enter/leave
+  // and its inner sub-steps fill the trace; no compound entry.
+  const recordToTrace =
+    opts.recordToTrace ?? !(topLevel && node.railKind === 'activity');
   const shared = runState.shared;
 
   checkKillAndLimit(runState, ctx);
 
+  // §6.2 step 5: full path, invocation, local.
+  const fullPath = joinPath(runState.path, name);
+  const invocation = (shared.cycleCounters.get(fullPath) ?? 0) + 1;
+  shared.cycleCounters.set(fullPath, invocation);
+  const local = shared.localState.get(fullPath) ?? {};
+
+  const depth = runState.depth;
   const t0 = now();
 
   emitTracer(shared, {
     type: 'step-start',
     ts: round2(t0 - shared.runStartTime),
-    depth: runState.depth,
-    step: name,
+    depth,
+    step: fullPath,
     input: runState.currentInput,
+    invocation,
+    local,
     kind: node.railKind,
   });
 
-  // Fork the run-state if invoking an Activity as a sub-call (§6.1, §8.2).
-  let invokeRunState = runState;
-  if (forkActivity && node.railKind === 'activity') {
+  // Fork run-state for composite kinds so inner paths/depths nest
+  // correctly. Step-Nodes do not fork; the `fullPath` is passed via a
+  // per-invocation slot so `runInfo.path` reflects this position.
+  //
+  // Top-level invocation (from flow.run): the held node IS the root
+  // — its inner steps must not be prefixed by the flow name and must
+  // not be one level deeper. So we skip the fork; `path` stays '' and
+  // `depth` stays 0. For top-level Parallel-Nodes this means branches
+  // get path = branchKey (not flowName.branchKey).
+  let invokeRunState;
+  if (node.railKind === 'activity' && !topLevel) {
     invokeRunState = {
       ...runState,
       depth: runState.depth + 1,
       parentDepth: runState.depth,
+      path: fullPath,
     };
+  } else if (node.railKind === 'parallel' && !topLevel) {
+    invokeRunState = { ...runState, path: fullPath };
+  } else {
+    invokeRunState = { ...runState, fullPath };
   }
+  invokeRunState.invocation = invocation;
 
   let result;
   let invokeError;
   try {
-    result = await node.invoke(name, ctx, invokeRunState);
+    result = await node.invoke(name, ctx, invokeRunState, local);
   } catch (e) {
     invokeError = e;
   }
@@ -271,7 +333,7 @@ export async function runStep(node, name, ctx, runState, opts = {}) {
     if (!isLibError(invokeError)) {
       propagated = new RailRuntimeError(
         'UNHANDLED_THROW',
-        `Step "${name}" threw: ${/** @type {any} */ (invokeError)?.message ?? invokeError}`,
+        `Step "${fullPath}" threw: ${/** @type {any} */ (invokeError)?.message ?? invokeError}`,
         {
           flow: shared.flowName,
           trace: shared.trace,
@@ -284,19 +346,23 @@ export async function runStep(node, name, ctx, runState, opts = {}) {
     emitTracer(shared, {
       type: 'step-throw',
       ts: round2(t1 - shared.runStartTime),
-      depth: runState.depth,
-      step: name,
+      depth,
+      step: fullPath,
       error: eventError,
       duration,
+      invocation,
+      local,
       kind: node.railKind,
     });
     if (recordToTrace) {
       const entry = {
-        step: name,
+        step: fullPath,
         output: null,
         duration,
-        depth: runState.depth,
+        depth,
         threw: true,
+        invocation,
+        local,
         error: eventError,
       };
       shared.trace.push(entry);
@@ -309,25 +375,29 @@ export async function runStep(node, name, ctx, runState, opts = {}) {
   if (typeof result !== 'object' || result === null || typeof result.output !== 'string') {
     const err = new RailRuntimeError(
       'INVALID_SUB_NODE',
-      `Node "${name}" invoke returned invalid shape (expected { output, ctx? })`,
+      `Node "${fullPath}" invoke returned invalid shape (expected { output, ctx?, local? })`,
       { flow: shared.flowName, trace: shared.trace, ctx }
     );
     emitTracer(shared, {
       type: 'step-throw',
       ts: round2(t1 - shared.runStartTime),
-      depth: runState.depth,
-      step: name,
+      depth,
+      step: fullPath,
       error: err,
       duration,
+      invocation,
+      local,
       kind: node.railKind,
     });
     if (recordToTrace) {
       const entry = {
-        step: name,
+        step: fullPath,
         output: null,
         duration,
-        depth: runState.depth,
+        depth,
         threw: true,
+        invocation,
+        local,
         error: err,
       };
       shared.trace.push(entry);
@@ -340,25 +410,29 @@ export async function runStep(node, name, ctx, runState, opts = {}) {
   if (!node.outputs.includes(result.output)) {
     const err = new RailRuntimeError(
       'UNKNOWN_OUTPUT_AT_RUNTIME',
-      `Node "${name}" returned unknown output "${result.output}"; expected one of: ${node.outputs.join(', ')}`,
+      `Node "${fullPath}" returned unknown output "${result.output}"; expected one of: ${node.outputs.join(', ')}`,
       { flow: shared.flowName, trace: shared.trace, ctx }
     );
     emitTracer(shared, {
       type: 'step-throw',
       ts: round2(t1 - shared.runStartTime),
-      depth: runState.depth,
-      step: name,
+      depth,
+      step: fullPath,
       error: err,
       duration,
+      invocation,
+      local,
       kind: node.railKind,
     });
     if (recordToTrace) {
       const entry = {
-        step: name,
+        step: fullPath,
         output: null,
         duration,
-        depth: runState.depth,
+        depth,
         threw: true,
+        invocation,
+        local,
         error: err,
       };
       shared.trace.push(entry);
@@ -367,23 +441,35 @@ export async function runStep(node, name, ctx, runState, opts = {}) {
     throw err;
   }
 
+  // Persist local if the invoke returned one. Absent local → keep prior.
+  const outgoingLocal = Object.prototype.hasOwnProperty.call(result, 'local')
+    ? result.local
+    : local;
+  if (Object.prototype.hasOwnProperty.call(result, 'local')) {
+    shared.localState.set(fullPath, result.local);
+  }
+
   emitTracer(shared, {
     type: 'step-end',
     ts: round2(t1 - shared.runStartTime),
-    depth: runState.depth,
-    step: name,
+    depth,
+    step: fullPath,
     output: result.output,
     duration,
+    invocation,
+    local: outgoingLocal,
     kind: node.railKind,
   });
 
   if (recordToTrace) {
     const entry = {
-      step: name,
+      step: fullPath,
       output: result.output,
       duration,
-      depth: runState.depth,
+      depth,
       threw: false,
+      invocation,
+      local: outgoingLocal,
     };
     shared.trace.push(entry);
     callLogger(shared, entry);

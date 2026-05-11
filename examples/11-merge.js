@@ -29,7 +29,7 @@ const wf = activity((a) => {
   a.wire(without.out('ok'), withMerge);
   a.wire(withMerge.out('ok'), ok);
 });
-wf.compile();
+wf.check();
 
 const r = await flow('wf', wf).run({ id: 'x', body: 'hello' }, { logger: () => {} });
 console.log('terminus:', r.terminus);

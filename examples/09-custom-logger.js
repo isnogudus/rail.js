@@ -23,7 +23,7 @@ const wf = activity((a) => {
   a.wire(v.out('ok'),  e);
   a.wire(e.out('ok'),  ok);
 });
-wf.compile();
+wf.check();
 
 const lines = [];
 const logger = (entry) => {

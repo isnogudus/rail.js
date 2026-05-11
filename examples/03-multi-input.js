@@ -16,7 +16,7 @@ const a = activity((a) => {
     { outputs: ['retry', 'skip'] }
   ));
 
-  const recover = a.addNode('recover', node((ctx, runInfo) => {
+  const recover = a.addNode('recover', node((ctx, _local, runInfo) => {
     switch (runInfo.input) {
       case 'retry': return { output: 'ok', ctx: { ...ctx, retried: true } };
       case 'skip':  return { output: 'ok', ctx: { ...ctx, skipped: true } };
@@ -29,7 +29,7 @@ const a = activity((a) => {
   a.wire(trigger.out('skip'),  recover.in('skip'));
   a.wire(recover.out('ok'),    ok);
 });
-a.compile();
+a.check();
 
 const f = flow('multi-input', a);
 

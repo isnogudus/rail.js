@@ -22,7 +22,7 @@ describe('Tracer events (§6.8, acceptance #31)', () => {
       a.wire(start, v);
       a.wire(v.out('ok'), ok);
     });
-    a.compile();
+    a.check();
 
     await flow('w', a).run({}, { ...silent, tracer });
     const types = events.map((e) => e.type);
@@ -50,7 +50,7 @@ describe('Tracer events (§6.8, acceptance #31)', () => {
       a.wire(start, v);
       a.wire(v.out('ok'), ok);
     });
-    a.compile();
+    a.check();
     try {
       await flow('w', a).run({}, { ...silent, tracer: (e) => events.push(e) });
     } catch {}
@@ -73,7 +73,7 @@ describe('Tracer events (§6.8, acceptance #31)', () => {
       a.wire(start, fan);
       a.wire(fan.out('done'), ok);
     });
-    a.compile();
+    a.check();
     await flow('w', a).run({}, { ...silent, tracer: (e) => events.push(e) });
 
     const branchEvents = events.filter((e) => e.type.startsWith('branch-'));
@@ -92,7 +92,7 @@ describe('Tracer events (§6.8, acceptance #31)', () => {
       a.wire(start, v);
       a.wire(v.out('ok'), ok);
     });
-    a.compile();
+    a.check();
     try {
       await flow('w', a).run({}, {
         ...silent,
@@ -115,7 +115,7 @@ describe('Tracer events (§6.8, acceptance #31)', () => {
       a.wire(start, v);
       a.wire(v.out('ok'), ok);
     });
-    a.compile();
+    a.check();
     try {
       await flow('w', a).run({}, {
         logger: () => { throw new Error('log-bug'); },
@@ -144,7 +144,7 @@ describe('Tracer events (§6.8, acceptance #31)', () => {
       a.wire(start, i);
       a.wire(i.out('ok'), ok);
     });
-    outer.compile();
+    outer.check();
     await flow('w', outer).run({}, { ...silent, tracer: (e) => events.push(e) });
 
     const enter = events.find((e) => e.type === 'activity-enter' && e.name === 'inner');
@@ -175,7 +175,7 @@ describe('Default logger format (§6.6, acceptance #30)', () => {
         a.wire(start, i);
         a.wire(i.out('ok'), ok);
       });
-      outer.compile();
+      outer.check();
       await flow('w', outer).run({});
     } finally {
       console.log = orig;
@@ -200,7 +200,7 @@ describe('Default logger format (§6.6, acceptance #30)', () => {
         a.wire(start, v);
         a.wire(v.out('ok'), ok);
       });
-      a.compile();
+      a.check();
       try { await flow('w', a).run({}); } catch {}
     } finally {
       console.log = orig;

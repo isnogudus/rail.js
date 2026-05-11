@@ -51,7 +51,7 @@ const outer = activity((a) => {
   a.wire(inner.out('success'),  success);
   a.wire(inner.out('failure'),  failure);
 });
-outer.compile();
+outer.check();
 
 console.log('--- flow.toMermaid (LR) ---');
 console.log(flow('outer', outer).toMermaid());

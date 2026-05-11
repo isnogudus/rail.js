@@ -32,10 +32,10 @@ describe('catching(stepNode, mapping) (§3.13, acceptance #10)', () => {
   it('compile delegates to inner; compiled() reflects inner', () => {
     const inner = node(() => 'ok', { outputs: ['ok'] });
     const wrapped = catching(inner, { NetworkError: 'net5xx' });
-    expect(wrapped.compiled()).toBe(false);
-    wrapped.compile();
-    expect(wrapped.compiled()).toBe(true);
-    expect(inner.compiled()).toBe(true);
+    expect(wrapped.isChecked()).toBe(false);
+    wrapped.check();
+    expect(wrapped.isChecked()).toBe(true);
+    expect(inner.isChecked()).toBe(true);
   });
 
   it('translates matching error.name into mapped output', async () => {
@@ -55,7 +55,7 @@ describe('catching(stepNode, mapping) (§3.13, acceptance #10)', () => {
       a.wire(send.out('ok'), ok);
       a.wire(send.out('net5xx'), fail);
     });
-    a.compile();
+    a.check();
 
     const r = await flow('a', a).run({}, silent);
     expect(r.terminus).toBe('failure');
@@ -73,7 +73,7 @@ describe('catching(stepNode, mapping) (§3.13, acceptance #10)', () => {
       a.wire(send.out('ok'), ok);
       a.wire(send.out('net5xx'), fail);
     });
-    a.compile();
+    a.check();
     try {
       await flow('a', a).run({}, silent);
       throw new Error('expected throw');
@@ -97,7 +97,7 @@ describe('catching(stepNode, mapping) (§3.13, acceptance #10)', () => {
       a.wire(s.out('ok'), ok);
       a.wire(s.out('mapped'), m);
     });
-    a.compile();
+    a.check();
     try {
       await flow('a', a).run({}, silent);
       throw new Error('expected throw');
@@ -114,8 +114,8 @@ describe('catching(stepNode, mapping) (§3.13, acceptance #10)', () => {
     const w2 = catching(base, { NetworkError: 'b' });
     expect(w1.outputs).toEqual(['ok', 'a']);
     expect(w2.outputs).toEqual(['ok', 'b']);
-    w1.compile();
-    expect(base.compiled()).toBe(true);
-    expect(w2.compiled()).toBe(true); // delegates to base
+    w1.check();
+    expect(base.isChecked()).toBe(true);
+    expect(w2.isChecked()).toBe(true); // delegates to base
   });
 });

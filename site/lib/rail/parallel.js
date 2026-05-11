@@ -7,20 +7,20 @@
  * then re-throws the first error in branch declaration order.
  *
  * Branches each receive their own fork of the run-state so that
- * interleaved `await`s do not trample per-fork slots like `depth`
- * and `currentInput`. An internal AbortController is folded into
- * each branch's combined signal so a sibling failure causes
+ * interleaved `await`s do not trample per-fork slots like `depth`,
+ * `currentInput`, and `path`. An internal AbortController is folded
+ * into each branch's combined signal so a sibling failure causes
  * cooperative abort of in-flight work.
  *
  * Implementation: each Parallel-Node is `Object.create(PARALLEL_PROTO)`
- * with per-instance state (`branches`, `_branchKeys`, `_compiled`).
- * The methods on PARALLEL_PROTO are shared across all Parallel-Nodes
- * — they dispatch to module-level helpers via `this`.
+ * with per-instance state (`branches`, `_branchKeys`, `_checked`).
  */
 
 import {
-  RailCompileError,
+  RailBuildError,
+  RailCheckError,
   RailRuntimeError,
+  validateName,
 } from './errors.js';
 import { isRailNode } from './ctx.js';
 import {
@@ -28,28 +28,28 @@ import {
   checkKillAndLimit,
   combineSignals,
   emitTracer,
+  joinPath,
   now,
   round2,
 } from './runtime.js';
 
 /* ------------------------------------------------------------------ */
-/* Module-level operations on a Parallel-Node                         */
+/* Check                                                              */
 /* ------------------------------------------------------------------ */
 
-function compileParallel(node) {
-  if (node._compiled) return;
+function checkParallel(node) {
+  if (node._checked) return;
 
   const errors = [];
+  if (node._branchKeys.length === 0) {
+    errors.push({ code: 'EMPTY_PARALLEL' });
+  }
   for (const key of node._branchKeys) {
     const b = node.branches[key];
-    if (!isRailNode(b)) {
-      errors.push({ code: 'NOT_A_NODE', path: key });
-      continue;
-    }
     try {
-      if (!b.compiled()) b.compile();
+      if (!b.isChecked()) b.check();
     } catch (e) {
-      if (e instanceof RailCompileError) {
+      if (e instanceof RailCheckError) {
         for (const inner of e.errors) {
           const path = inner.path ? `${key}.${inner.path}` : key;
           errors.push({ ...inner, path });
@@ -61,10 +61,14 @@ function compileParallel(node) {
   }
 
   if (errors.length > 0) {
-    throw new RailCompileError('declaration', errors);
+    throw new RailCheckError('completeness', errors);
   }
-  node._compiled = true;
+  node._checked = true;
 }
+
+/* ------------------------------------------------------------------ */
+/* Branch runner                                                      */
+/* ------------------------------------------------------------------ */
 
 /**
  * Runs a single branch. Returns either { status: 'ok', key, result }
@@ -72,9 +76,13 @@ function compileParallel(node) {
  */
 function runBranch(node, branchKey, ctx, runState, internalAC) {
   const branch = node.branches[branchKey];
-  const compoundName = `${runState._parallelName}.${branchKey}`;
-  const branchInputPort = branch.inputs?.[0] ?? 'in';
   const shared = runState.shared;
+  const branchPath = joinPath(runState.path, branchKey);
+  const branchInputPort = branch.inputs?.[0] ?? 'in';
+
+  const invocation = (shared.cycleCounters.get(branchPath) ?? 0) + 1;
+  shared.cycleCounters.set(branchPath, invocation);
+  const local = shared.localState.get(branchPath) ?? {};
 
   const branchCombined = combineSignals([
     runState.combinedSignal,
@@ -85,11 +93,10 @@ function runBranch(node, branchKey, ctx, runState, internalAC) {
   const branchFork = {
     ...runState,
     currentInput: branchInputPort,
+    path: branchPath,
     combinedSignal: branchCombined,
+    invocation,
   };
-  // Activity branches increment depth, per §3.7 ("if a parallel branch
-  // is an Activity, that Activity's invocation increments depth as
-  // any sub-activity would").
   if (branch.railKind === 'activity') {
     branchFork.depth = runState.depth + 1;
     branchFork.parentDepth = runState.depth;
@@ -103,8 +110,8 @@ function runBranch(node, branchKey, ctx, runState, internalAC) {
     } catch (e) {
       try { internalAC.abort(e); } catch { internalAC.abort(); }
       const t1 = now();
-      emitBranchThrow(shared, runState.depth, branchKey, e, round2(t1 - t0));
-      pushTraceEntry(shared, compoundName, runState.depth, round2(t1 - t0), null, true, e);
+      emitBranchThrow(shared, runState.depth, branchKey, e, round2(t1 - t0), invocation, local);
+      pushTraceEntry(shared, branchPath, runState.depth, round2(t1 - t0), null, true, e, invocation, local);
       return { status: 'failed', key: branchKey, error: e };
     }
 
@@ -113,12 +120,14 @@ function runBranch(node, branchKey, ctx, runState, internalAC) {
       ts: round2(t0 - shared.runStartTime),
       depth: runState.depth,
       branch: branchKey,
+      invocation,
+      local,
     });
 
     let result;
     let invokeError;
     try {
-      result = await branch.invoke(compoundName, ctx, branchFork);
+      result = await branch.invoke(branchKey, ctx, branchFork, local);
     } catch (e) {
       invokeError = e;
     }
@@ -130,11 +139,11 @@ function runBranch(node, branchKey, ctx, runState, internalAC) {
       let propagated = invokeError;
       if (
         !(invokeError instanceof RailRuntimeError) &&
-        !(invokeError instanceof RailCompileError)
+        !(invokeError instanceof RailCheckError)
       ) {
         propagated = new RailRuntimeError(
           'UNHANDLED_THROW',
-          `Branch "${compoundName}" threw: ${invokeError?.message ?? invokeError}`,
+          `Branch "${branchPath}" threw: ${invokeError?.message ?? invokeError}`,
           {
             flow: shared.flowName,
             trace: shared.trace,
@@ -144,12 +153,11 @@ function runBranch(node, branchKey, ctx, runState, internalAC) {
         );
       }
       try { internalAC.abort(propagated); } catch { internalAC.abort(); }
-      emitBranchThrow(shared, runState.depth, branchKey, propagated, duration);
-      pushTraceEntry(shared, compoundName, runState.depth, duration, null, true, propagated);
+      emitBranchThrow(shared, runState.depth, branchKey, propagated, duration, invocation, local);
+      pushTraceEntry(shared, branchPath, runState.depth, duration, null, true, propagated, invocation, local);
       return { status: 'failed', key: branchKey, error: propagated };
     }
 
-    // Validate invoke contract shape.
     if (
       typeof result !== 'object' ||
       result === null ||
@@ -157,24 +165,32 @@ function runBranch(node, branchKey, ctx, runState, internalAC) {
     ) {
       const err = new RailRuntimeError(
         'INVALID_SUB_NODE',
-        `Branch "${compoundName}" invoke returned invalid shape`,
+        `Branch "${branchPath}" invoke returned invalid shape`,
         { flow: shared.flowName, trace: shared.trace, ctx }
       );
       try { internalAC.abort(err); } catch { internalAC.abort(); }
-      emitBranchThrow(shared, runState.depth, branchKey, err, duration);
-      pushTraceEntry(shared, compoundName, runState.depth, duration, null, true, err);
+      emitBranchThrow(shared, runState.depth, branchKey, err, duration, invocation, local);
+      pushTraceEntry(shared, branchPath, runState.depth, duration, null, true, err, invocation, local);
       return { status: 'failed', key: branchKey, error: err };
     }
     if (!branch.outputs.includes(result.output)) {
       const err = new RailRuntimeError(
         'UNKNOWN_OUTPUT_AT_RUNTIME',
-        `Branch "${compoundName}" returned unknown output "${result.output}"; expected one of: ${branch.outputs.join(', ')}`,
+        `Branch "${branchPath}" returned unknown output "${result.output}"; expected one of: ${branch.outputs.join(', ')}`,
         { flow: shared.flowName, trace: shared.trace, ctx }
       );
       try { internalAC.abort(err); } catch { internalAC.abort(); }
-      emitBranchThrow(shared, runState.depth, branchKey, err, duration);
-      pushTraceEntry(shared, compoundName, runState.depth, duration, null, true, err);
+      emitBranchThrow(shared, runState.depth, branchKey, err, duration, invocation, local);
+      pushTraceEntry(shared, branchPath, runState.depth, duration, null, true, err, invocation, local);
       return { status: 'failed', key: branchKey, error: err };
+    }
+
+    // Persist returned local (if any).
+    const outgoingLocal = Object.prototype.hasOwnProperty.call(result, 'local')
+      ? result.local
+      : local;
+    if (Object.prototype.hasOwnProperty.call(result, 'local')) {
+      shared.localState.set(branchPath, result.local);
     }
 
     emitTracer(shared, {
@@ -183,14 +199,16 @@ function runBranch(node, branchKey, ctx, runState, internalAC) {
       depth: runState.depth,
       branch: branchKey,
       output: result.output,
+      invocation,
+      local: outgoingLocal,
     });
-    pushTraceEntry(shared, compoundName, runState.depth, duration, result.output, false);
+    pushTraceEntry(shared, branchPath, runState.depth, duration, result.output, false, undefined, invocation, outgoingLocal);
 
     return { status: 'ok', key: branchKey, result };
   })();
 }
 
-function emitBranchThrow(shared, depth, branchKey, error, duration) {
+function emitBranchThrow(shared, depth, branchKey, error, duration, invocation, local) {
   emitTracer(shared, {
     type: 'branch-throw',
     ts: round2(now() - shared.runStartTime),
@@ -198,21 +216,27 @@ function emitBranchThrow(shared, depth, branchKey, error, duration) {
     branch: branchKey,
     error,
     duration,
+    invocation,
+    local,
   });
 }
 
-function pushTraceEntry(shared, step, depth, duration, output, threw, error) {
-  const entry = { step, output, duration, depth, threw };
+function pushTraceEntry(shared, step, depth, duration, output, threw, error, invocation, local) {
+  const entry = { step, output, duration, depth, threw, invocation, local };
   if (error !== undefined) entry.error = error;
   shared.trace.push(entry);
   callLogger(shared, entry);
 }
 
-async function invokeParallel(node, name, ctx, runState) {
-  if (!node._compiled) {
+/* ------------------------------------------------------------------ */
+/* Invoke                                                             */
+/* ------------------------------------------------------------------ */
+
+async function invokeParallel(node, name, ctx, runState, _local) {
+  if (!node._checked) {
     throw new RailRuntimeError(
       'INTERNAL',
-      `Parallel-Node "${name}" invoked before compile`,
+      `Parallel-Node "${name}" invoked before check()`,
       {
         flow: runState.shared.flowName,
         trace: runState.shared.trace,
@@ -222,12 +246,9 @@ async function invokeParallel(node, name, ctx, runState) {
   }
 
   const internalAC = new AbortController();
-  // Stash the parallel-node's name in a per-call slot so runBranch can
-  // build branch compound names without taking yet-another parameter.
-  const namedRunState = { ...runState, _parallelName: name };
 
   const branchPromises = node._branchKeys.map((key) =>
-    runBranch(node, key, ctx, namedRunState, internalAC)
+    runBranch(node, key, ctx, runState, internalAC)
   );
 
   const settled = await Promise.all(branchPromises);
@@ -239,7 +260,6 @@ async function invokeParallel(node, name, ctx, runState) {
     }
   }
 
-  // All succeeded — build typed parallel-results ctx.
   const results = Object.create(null);
   for (const r of settled) {
     const branchCtx =
@@ -270,9 +290,11 @@ const PARALLEL_PROTO = {
   railKind: 'parallel',
   inputs: ['in'],
   outputs: ['done'],
-  compile()  { return compileParallel(this); },
-  compiled() { return this._compiled; },
-  invoke(name, ctx, runState) { return invokeParallel(this, name, ctx, runState); },
+  check()    { return checkParallel(this); },
+  isChecked() { return this._checked; },
+  invoke(name, ctx, runState, local) {
+    return invokeParallel(this, name, ctx, runState, local);
+  },
 };
 
 /* ------------------------------------------------------------------ */
@@ -281,7 +303,7 @@ const PARALLEL_PROTO = {
 
 /**
  * @param {Record<string, object>} branches
- * @returns {object} An uncompiled Parallel-Node.
+ * @returns {object} An unchecked Parallel-Node.
  */
 export function parallel(branches) {
   if (!branches || typeof branches !== 'object' || Array.isArray(branches)) {
@@ -289,14 +311,24 @@ export function parallel(branches) {
       'parallel(branches): branches must be an object map of branch name to Rail-Node'
     );
   }
+
   const branchKeys = Object.keys(branches);
-  if (branchKeys.length === 0) {
-    throw new TypeError('parallel(branches): at least one branch is required');
+
+  // Per-name eager validation; empty-map structural check deferred to check().
+  for (const key of branchKeys) {
+    validateName(key, 'parallel(): branch key', { branch: key });
+    if (!isRailNode(branches[key])) {
+      throw new RailBuildError(
+        'NOT_A_NODE',
+        `parallel(): branch "${key}" is not a Rail-Node`,
+        { branch: key }
+      );
+    }
   }
 
   const node = Object.create(PARALLEL_PROTO);
   node.branches    = branches;
   node._branchKeys = branchKeys;
-  node._compiled   = false;
+  node._checked    = false;
   return node;
 }

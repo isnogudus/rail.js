@@ -1,0 +1,351 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>rail.js — Specification</title>
+<meta name="description" content="Implementation specification for rail.js — the source of truth for the library's contract.">
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,400i;9..144,500i&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="./style.css">
+
+<style>
+/* Spec-page-specific layout */
+.spec-shell {
+  display: grid;
+  grid-template-columns: 260px minmax(0, 1fr);
+  gap: 48px;
+  padding: 40px 48px 80px;
+  max-width: 1180px;
+  margin: 0 auto;
+}
+@media (max-width: 880px) {
+  .spec-shell {
+    grid-template-columns: 1fr;
+    padding: 24px 16px 60px;
+    gap: 24px;
+  }
+  .spec-toc { position: static; max-height: none; }
+}
+.spec-toc {
+  position: sticky;
+  top: 84px;
+  max-height: calc(100vh - 120px);
+  overflow-y: auto;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--ink-2);
+  padding-right: 8px;
+  border-right: 1px solid var(--line);
+}
+.spec-toc .toc-title {
+  font-family: 'Fraunces', serif;
+  font-style: italic;
+  font-size: 13px;
+  color: var(--ink);
+  margin-bottom: 14px;
+  letter-spacing: 0.02em;
+}
+.spec-toc a {
+  display: block;
+  color: var(--ink-2);
+  text-decoration: none;
+  padding: 2px 0;
+  border-left: 2px solid transparent;
+  padding-left: 10px;
+  margin-left: -10px;
+  transition: color 0.15s, border-color 0.15s;
+}
+.spec-toc a:hover { color: var(--ink); }
+.spec-toc a.active {
+  color: var(--rail);
+  border-left-color: var(--rail);
+  font-weight: 500;
+}
+.spec-toc a.lvl-3 { padding-left: 22px; font-size: 11.5px; color: var(--muted); }
+.spec-toc a.lvl-3:hover { color: var(--ink-2); }
+.spec-toc a.lvl-3.active { color: var(--rail); }
+
+.spec-body {
+  min-width: 0;
+  font-size: 15.5px;
+  line-height: 1.72;
+  color: var(--ink);
+}
+.spec-body h1 {
+  font-family: 'Fraunces', serif;
+  font-weight: 500;
+  font-size: 42px;
+  line-height: 1.1;
+  letter-spacing: -0.02em;
+  margin: 0 0 24px;
+  color: var(--ink);
+}
+.spec-body h2 {
+  font-family: 'Fraunces', serif;
+  font-weight: 500;
+  font-size: 28px;
+  line-height: 1.2;
+  margin: 56px 0 18px;
+  padding-top: 24px;
+  border-top: 1px solid var(--line);
+  color: var(--ink);
+}
+.spec-body h3 {
+  font-family: 'Fraunces', serif;
+  font-weight: 500;
+  font-size: 21px;
+  margin: 36px 0 12px;
+  color: var(--ink);
+}
+.spec-body h4 {
+  font-family: 'Fraunces', serif;
+  font-style: italic;
+  font-weight: 500;
+  font-size: 17px;
+  margin: 24px 0 10px;
+  color: var(--ink);
+}
+.spec-body p { margin: 0 0 16px; }
+.spec-body ul, .spec-body ol { margin: 0 0 16px 22px; padding: 0; }
+.spec-body li { margin-bottom: 6px; }
+.spec-body li > ul, .spec-body li > ol { margin-top: 6px; margin-bottom: 0; }
+.spec-body code {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 0.88em;
+  background: var(--bg-2);
+  padding: 1px 6px;
+  border-radius: 3px;
+  color: var(--ink);
+}
+.spec-body pre {
+  background: var(--ink);
+  color: var(--paper);
+  padding: 16px 20px;
+  border-radius: 6px;
+  overflow-x: auto;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 12.5px;
+  line-height: 1.6;
+  margin: 0 0 20px;
+}
+.spec-body pre code {
+  background: transparent;
+  padding: 0;
+  color: inherit;
+  font-size: inherit;
+}
+.spec-body blockquote {
+  border-left: 3px solid var(--rail);
+  background: var(--rail-soft);
+  padding: 12px 18px;
+  margin: 0 0 20px;
+  color: var(--ink);
+  font-style: italic;
+}
+.spec-body table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0 0 24px;
+  font-size: 13.5px;
+}
+.spec-body table th,
+.spec-body table td {
+  text-align: left;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line);
+  vertical-align: top;
+}
+.spec-body table th {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-weight: 500;
+  font-size: 12.5px;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--ink-2);
+  border-bottom: 2px solid var(--line-strong);
+}
+.spec-body table td code {
+  font-size: 12.5px;
+  padding: 1px 4px;
+}
+.spec-body hr {
+  border: 0;
+  border-top: 1px solid var(--line);
+  margin: 40px 0;
+}
+.spec-body a { color: var(--rail); text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 2px; }
+.spec-body a:hover { color: var(--ink); }
+.spec-body strong { font-weight: 600; }
+
+.spec-loading {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  color: var(--muted);
+  font-size: 14px;
+  padding: 80px 0;
+  text-align: center;
+}
+.spec-error {
+  color: var(--clay);
+  background: var(--clay-soft);
+  padding: 20px 24px;
+  border-radius: 6px;
+  margin: 40px 0;
+}
+
+.spec-meta {
+  margin-bottom: 32px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--line);
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 12px;
+  color: var(--muted);
+  letter-spacing: 0.04em;
+}
+</style>
+</head>
+<body>
+
+<header class="nav">
+  <a class="nav-mark" href="./index.html#top">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+      <circle cx="6" cy="12" r="2.5"></circle>
+      <circle cx="18" cy="6" r="2.5"></circle>
+      <circle cx="18" cy="18" r="2.5"></circle>
+      <line x1="8.5" y1="11" x2="15.5" y2="7"></line>
+      <line x1="8.5" y1="13" x2="15.5" y2="17"></line>
+    </svg>
+    rail.js
+  </a>
+  <nav class="nav-links">
+    <a href="./index.html#problem">Problem</a>
+    <a href="./index.html#concept">Concept</a>
+    <a href="./index.html#demo">Live demo</a>
+    <a href="./index.html#features">Features</a>
+    <a href="./spec.html" class="active">Spec</a>
+    <a href="https://github.com/isnogudus/rail.js" target="_blank" rel="noopener">GitHub →</a>
+  </nav>
+</header>
+
+<main class="spec-shell">
+  <aside class="spec-toc">
+    <div class="toc-title">Contents</div>
+    <div id="toc"></div>
+  </aside>
+
+  <article class="spec-body">
+    <div class="spec-meta">docs/rail-spec.md · authoritative source of truth</div>
+    <div id="content" class="spec-loading">loading spec…</div>
+  </article>
+</main>
+
+<footer>
+  <div class="wrap">
+    <div class="row">
+      <div>
+        <div class="mono" style="margin-bottom: 6px;">rail.js</div>
+        <div>MIT · Plain JS + JSDoc · 0 runtime dependencies · Node 22+ / modern browsers</div>
+      </div>
+      <div style="text-align: right;">
+        <div class="mono"><a href="./index.html" style="color: inherit;">← back to overview</a></div>
+      </div>
+    </div>
+  </div>
+</footer>
+
+<script type="module">
+import { marked } from 'https://cdn.jsdelivr.net/npm/marked@14/lib/marked.esm.js';
+
+const SLUG_DUP = new Map();
+function slugify(text) {
+  const base = String(text)
+    .toLowerCase()
+    .replace(/[`*_~]/g, '')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '') || 'section';
+  const n = (SLUG_DUP.get(base) ?? 0) + 1;
+  SLUG_DUP.set(base, n);
+  return n === 1 ? base : `${base}-${n - 1}`;
+}
+
+// Walk the rendered DOM and rewrite heading ids deterministically so
+// the TOC anchors match what's actually rendered.
+function rewriteHeadings(root) {
+  const headings = [];
+  for (const h of root.querySelectorAll('h1, h2, h3')) {
+    const id = slugify(h.textContent);
+    h.id = id;
+    const level = Number(h.tagName.slice(1));
+    headings.push({ id, level, text: h.textContent });
+  }
+  return headings;
+}
+
+function buildToc(headings) {
+  const toc = document.getElementById('toc');
+  toc.innerHTML = '';
+  for (const h of headings) {
+    if (h.level === 1) continue;     // skip the document title
+    const a = document.createElement('a');
+    a.href = `#${h.id}`;
+    a.textContent = h.text;
+    a.className = `lvl-${h.level}`;
+    toc.appendChild(a);
+  }
+}
+
+function setupScrollSpy(headings) {
+  const links = new Map();
+  for (const a of document.querySelectorAll('.spec-toc a')) {
+    links.set(a.getAttribute('href').slice(1), a);
+  }
+  const observer = new IntersectionObserver((entries) => {
+    for (const e of entries) {
+      if (e.isIntersecting) {
+        for (const a of links.values()) a.classList.remove('active');
+        const link = links.get(e.target.id);
+        if (link) link.classList.add('active');
+      }
+    }
+  }, { rootMargin: '-80px 0px -75% 0px' });
+  for (const h of headings) {
+    const el = document.getElementById(h.id);
+    if (el && h.level !== 1) observer.observe(el);
+  }
+}
+
+async function loadSpec() {
+  const content = document.getElementById('content');
+  try {
+    const res = await fetch('./rail-spec.md');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const md = await res.text();
+    marked.setOptions({ gfm: true, breaks: false });
+    const html = marked.parse(md);
+    content.classList.remove('spec-loading');
+    content.innerHTML = html;
+    const headings = rewriteHeadings(content);
+    buildToc(headings);
+    setupScrollSpy(headings);
+
+    // If the page was opened with a hash, scroll there after render.
+    if (location.hash) {
+      const target = document.getElementById(location.hash.slice(1));
+      if (target) target.scrollIntoView({ behavior: 'instant', block: 'start' });
+    }
+  } catch (e) {
+    content.classList.remove('spec-loading');
+    content.innerHTML = `<div class="spec-error">Could not load spec: ${e.message}.
+      The markdown source lives at <code>docs/rail-spec.md</code>; on the deployed site it is
+      copied next to this page by <code>npm run site:sync</code>.</div>`;
+  }
+}
+
+loadSpec();
+</script>
+
+</body>
+</html>

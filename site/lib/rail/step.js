@@ -5,12 +5,12 @@
  * name is given by the call site that adds it to a flow or activity.
  *
  * Implementation: each Step-Node is `Object.create(STEP_PROTO)` with
- * per-instance state (`inputs`, `outputs`, `_fn`, `_compiled`). The
+ * per-instance state (`inputs`, `outputs`, `_fn`, `_checked`). The
  * methods on STEP_PROTO are shared across all Step-Nodes — they
  * dispatch to module-level helpers via `this`.
  */
 
-import { RailCompileError, RailRuntimeError } from './errors.js';
+import { RailCheckError, RailRuntimeError, validateName } from './errors.js';
 
 /**
  * @typedef {object} StepOptions
@@ -23,8 +23,9 @@ import { RailCompileError, RailRuntimeError } from './errors.js';
 /* ------------------------------------------------------------------ */
 
 /**
- * Validates an inputs / outputs port array. Pushes phase-A-style
- * issues to `errors`.
+ * Validates an inputs / outputs port array structurally (empty +
+ * duplicates). Per-name validation (`INVALID_NAME`) already happened
+ * eagerly in the factory. Pushes issues to `errors`.
  *
  * @param {string[]|undefined} arr
  * @param {'inputs'|'outputs'} kind
@@ -38,13 +39,7 @@ function validatePorts(arr, kind, errors) {
     return;
   }
   const seen = new Set();
-  let hadInvalid = false;
   for (const p of arr) {
-    if (typeof p !== 'string' || p.length === 0) {
-      if (!hadInvalid) errors.push({ code: emptyCode });
-      hadInvalid = true;
-      continue;
-    }
     if (seen.has(p)) {
       errors.push({ code: dupCode, [kind === 'outputs' ? 'output' : 'input']: p });
     } else {
@@ -57,23 +52,41 @@ function validatePorts(arr, kind, errors) {
 /* Module-level operations on a Step-Node                             */
 /* ------------------------------------------------------------------ */
 
-function compileStep(node) {
-  if (node._compiled) return;
+function checkStep(node) {
+  if (node._checked) return;
   const errors = [];
   validatePorts(node.outputs, 'outputs', errors);
   validatePorts(node.inputs, 'inputs', errors);
   if (errors.length > 0) {
-    throw new RailCompileError('declaration', errors);
+    throw new RailCheckError('declaration', errors);
   }
-  node._compiled = true;
+  node._checked = true;
 }
 
-async function invokeStep(node, name, ctx, runState) {
+/**
+ * Invokes the user function and translates its StepReturn into the
+ * uniform invoke-contract shape.
+ *
+ * The `local` parameter is the position-local state read by the
+ * step-execution loop. The user function receives it as its second
+ * argument; if the user returns a `local` field, this invoke passes
+ * it back up so the runner can store it.
+ *
+ * @param {object} node
+ * @param {string} name
+ * @param {object} ctx
+ * @param {object} runState
+ * @param {object} local
+ */
+async function invokeStep(node, name, ctx, runState, local) {
+  const shared = runState.shared;
   const runInfo = {
     signal: runState.combinedSignal,
     input: runState.currentInput,
+    invocation: runState.invocation,
+    path: runState.fullPath ?? runState.path,
   };
-  const result = await node._fn(ctx, runInfo);
+  const result = await node._fn(ctx, local, runInfo);
   if (typeof result === 'string') {
     return { output: result };
   }
@@ -82,10 +95,10 @@ async function invokeStep(node, name, ctx, runState) {
   }
   throw new RailRuntimeError(
     'INVALID_SUB_NODE',
-    `Step "${name}" returned invalid value: expected string or { output, ctx? }`,
+    `Step "${name}" returned invalid value: expected string or { output, ctx?, local? }`,
     {
-      flow: runState.shared.flowName,
-      trace: runState.shared.trace,
+      flow: shared.flowName,
+      trace: shared.trace,
       ctx,
     }
   );
@@ -96,13 +109,15 @@ async function invokeStep(node, name, ctx, runState) {
 /* ------------------------------------------------------------------ */
 
 // Not frozen: instances may shadow methods (useful for tests that
-// wrap compile/invoke). Treat the prototype as conceptually constant
+// wrap check/invoke). Treat the prototype as conceptually constant
 // — nothing in the library writes to it.
 const STEP_PROTO = {
   railKind: 'step',
-  compile()  { return compileStep(this); },
-  compiled() { return this._compiled; },
-  invoke(name, ctx, runState) { return invokeStep(this, name, ctx, runState); },
+  check()    { return checkStep(this); },
+  isChecked() { return this._checked; },
+  invoke(name, ctx, runState, local) {
+    return invokeStep(this, name, ctx, runState, local);
+  },
 };
 
 /* ------------------------------------------------------------------ */
@@ -112,9 +127,9 @@ const STEP_PROTO = {
 /**
  * Creates a Step-Node from a user function.
  *
- * @param {(ctx: object, runInfo?: {signal?: AbortSignal, input: string}) =>
- *           (string | {output: string, ctx?: object} |
- *            Promise<string | {output: string, ctx?: object}>)} fn
+ * @param {(ctx: object, local?: object, runInfo?: object) =>
+ *           (string | {output: string, ctx?: object, local?: object} |
+ *            Promise<string | {output: string, ctx?: object, local?: object}>)} fn
  * @param {StepOptions} options
  * @returns {object} A Rail-Node with `railKind: 'step'`.
  */
@@ -126,10 +141,22 @@ export function node(fn, options) {
     throw new TypeError('node(fn, opts): opts is required');
   }
 
+  const inputs  = Array.isArray(options.inputs)  ? options.inputs.slice()  : ['in'];
+  const outputs = Array.isArray(options.outputs) ? options.outputs.slice() : options.outputs;
+
+  // Per-name eager validation. Empty/duplicates structural checks
+  // are deferred to check() (§7.2 step-node self-check).
+  if (Array.isArray(inputs)) {
+    for (const p of inputs) validateName(p, 'node(): input', { input: p });
+  }
+  if (Array.isArray(outputs)) {
+    for (const p of outputs) validateName(p, 'node(): output', { output: p });
+  }
+
   const step = Object.create(STEP_PROTO);
-  step.inputs   = Array.isArray(options.inputs) ? options.inputs.slice() : ['in'];
-  step.outputs  = Array.isArray(options.outputs) ? options.outputs.slice() : options.outputs;
+  step.inputs   = inputs;
+  step.outputs  = outputs;
   step._fn       = fn;
-  step._compiled = false;
+  step._checked = false;
   return step;
 }

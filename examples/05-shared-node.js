@@ -37,8 +37,8 @@ const flowB = activity((a) => {
   a.wire(second.out('invalid'),    failure);
 });
 
-flowA.compile();
-flowB.compile();
+flowA.check();
+flowB.check();
 
 console.log('flowA terminus:', (await flow('A', flowA).run({ value: 1 })).terminus);
 console.log('flowB terminus:', (await flow('B', flowB).run({ value: 1 })).terminus);
