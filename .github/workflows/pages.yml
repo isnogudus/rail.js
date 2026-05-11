@@ -7,6 +7,7 @@ on:
       - 'site/**'
       - 'rail.js'
       - 'rail/**'
+      - 'docs/rail-spec.md'
       - '.github/workflows/pages.yml'
   workflow_dispatch:
 
@@ -27,15 +28,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Keep site/lib/ in sync with the library at the repo root, so the
-      # Pages deploy reflects the current rail.js source even if a contributor
-      # forgot to run `npm run site:sync` locally.
-      - name: Sync library copy into site/lib
+      # Keep site/lib/ in sync with the library at the repo root, and
+      # bundle the spec next to spec.html. Mirrors `npm run site:sync`
+      # so the Pages deploy reflects the current sources even if a
+      # contributor forgot to run it locally.
+      - name: Sync library + spec into site
         run: |
           rm -rf site/lib
           mkdir -p site/lib
           cp rail.js site/lib/rail.js
           cp -r rail site/lib/rail
+          cp docs/rail-spec.md site/rail-spec.md
 
       - uses: actions/configure-pages@v5
 
