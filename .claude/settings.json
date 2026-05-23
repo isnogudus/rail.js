@@ -1,0 +1,5 @@
+{
+  "permissions": {
+    "allow": ["Bash(grep *)", "Bash(flow)", "Bash(trace)", "Bash(node *)"]
+  }
+}
