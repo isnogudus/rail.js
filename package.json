@@ -18,6 +18,7 @@
   "scripts": {
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:qjs": "qjs --std test-quickjs.js",
     "example": "node example.js",
     "examples": "node examples/run-all.js",
     "build": "rm -rf dist && mkdir -p dist && npx --yes esbuild rail.js --bundle --format=esm --outfile=dist/rail.js && npx --yes esbuild rail.js --bundle --format=esm --minify --outfile=dist/rail.min.js",

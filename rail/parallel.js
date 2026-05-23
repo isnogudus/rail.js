@@ -105,7 +105,7 @@ export function parallel(branches, merge) {
 
       const p = branchNode._invoke(branchEntry, branchCtx, branchLocal, runState, branchPath);
       return p.catch((err) => {
-        try { runState.internalAbortController.abort(); } catch { /* ignore */ }
+        try { runState.internalAbortController?.abort(); } catch { /* ignore */ }
         throw err;
       });
     });

@@ -693,9 +693,12 @@
         <div class="feature-icon">
           <svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h10"/></svg>
         </div>
-        <h4>Plain ESM</h4>
-        <p>No bundler, no TypeScript pipeline, no runtime dependencies. Plain
-          JS with JSDoc, runs in modern Node and modern browsers alike.</p>
+        <h4>Plain ESM, cross-engine</h4>
+        <p>No bundler, no TypeScript pipeline, no runtime dependencies.
+          Runs unchanged in <span class="mono">Node 22+</span>, modern browsers, and
+          <span class="mono">QuickJS</span>. Cancellation is opt-in: when the host
+          lacks <span class="mono">AbortController</span>, signals are skipped and
+          everything else just works.</p>
       </div>
     </div>
 
@@ -729,7 +732,7 @@
     <div class="row">
       <div>
         <div class="mono" style="margin-bottom: 6px;">rail.js v0.3.0</div>
-        <div>MIT · Plain JS + JSDoc · 0 runtime dependencies · Node 22+ / modern browsers</div>
+        <div>MIT · Plain JS + JSDoc · 0 runtime dependencies · Node 22+ · modern browsers · QuickJS</div>
       </div>
       <div style="text-align: right;">
         <div class="mono">npm install @isnogudus/rail.js</div>

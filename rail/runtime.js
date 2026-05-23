@@ -139,17 +139,23 @@ function combineSignals(signals) {
 /**
  * Constructs the per-run state object (§13.1, §15.2).
  *
+ * `AbortController` and `AbortSignal` are host-provided in embedded
+ * engines (notably vanilla QuickJS). When they are unavailable, the
+ * runState's signal fields fall back to `null` / `undefined` and the
+ * library runs without cancellation support. `invokeNode`'s kill
+ * check and `parallel`'s sibling-abort are already optional-chained
+ * for this case.
+ *
  * @param {string} flowName
  * @param {object} [opts]
  * @returns {object} runState
  */
 export function makeRunState(flowName, opts) {
-  const internal = new AbortController();
-  const combined = combineSignals([
-    opts?.signal,
-    opts?.killSignal,
-    internal.signal,
-  ]);
+  const hasAC = typeof AbortController !== 'undefined';
+  const internal = hasAC ? new AbortController() : null;
+  const combined = hasAC
+    ? combineSignals([opts?.signal, opts?.killSignal, internal.signal])
+    : undefined;
 
   const logger = opts?.logger === undefined
     ? (entry) => defaultConsoleLogger(entry, flowName)

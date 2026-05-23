@@ -78,7 +78,17 @@ when debugging. Pin to a specific tag (`v0.3.0`) to lock the version.
 </script>
 ```
 
-ESM only. Node 22+ recommended (Node ≥ 19 needed for `AbortSignal.any`).
+ESM only. Engines: **Node 22+**, **modern browsers**, **QuickJS**.
+Cancellation needs `AbortController` / `AbortSignal` — present in
+Node ≥ 19 and modern browsers; **absent in vanilla QuickJS**. The
+library detects this and runs without cancellation in that case:
+`runInfo.signal` is `undefined`, `opts.killSignal` has no effect, and
+parallel sibling-aborts are no-ops. Everything else (atomic builders,
+activity, nrail, railway, parallel-with-merge, cycles, local state,
+tracer, logger) is engine-independent.
+
+A smoke test exists at [`test-quickjs.js`](./test-quickjs.js); run it
+with `npm run test:qjs` if you have a `qjs` binary on PATH.
 
 ## Quick start
 
