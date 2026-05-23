@@ -1,21 +1,29 @@
 # rail.js
 
 A small workflow library for JavaScript. Express business logic as a
-**graph of named steps** with explicit named outputs, validated at
-check time and traced at runtime.
+**graph of named nodes** with explicit named outputs, validated at
+build time and traced at runtime.
 
-- Plain ES modules + JSDoc — **no runtime dependencies**
+- Plain ES modules + JSDoc — **no runtime dependencies**, no build step
 - Async end to end
-- Three node kinds: `step`, `activity`, `parallel`
-- Eager build-time validation (`RailBuildError`) + post-builder
-  `check()` with completeness and topology phases (`RailCheckError`)
+- Five atomic builders (`atom`, `nstep`, `step`, `pass`, `fail`),
+  three group builders (`activity`, `nrail`, `railway`,
+  plus the concurrent `parallel`), and one wrapper (`pin`)
+- Eager build-time validation: every builder fully validates its
+  result before returning. Errors raise `RailBuildError` at the
+  offending builder call.
 - Cycles in the wire graph are valid — retry / poll / iteration
-  patterns are modelled as normal graph topology
-- Position-local state (`local`) on every step, symmetric to `ctx`
-- Mermaid render for documentation and debugging
-- Pluggable logger and structured tracer for live observation
-- Cooperative cancellation (`AbortSignal`) and a hard kill switch
-- Runs in modern Node and modern browsers (ESM)
+  patterns model as normal graph topology, bounded by the step budget.
+- Position-local state (`local`) on every node, hierarchical for
+  group nodes (`local.children[subName]`, `local.branches[branchName]`).
+- Mermaid render for documentation and debugging.
+- Pluggable logger and synchronous tracer (`begin` / `end` events)
+  for live observation.
+- Cooperative cancellation (`opts.signal`) and a hard kill switch
+  (`opts.killSignal`).
+- Runs in modern Node and modern browsers (native ESM).
+- Custom node kinds are first-class via `__rail_type__: 'node'` and
+  the exported `invokeNode` extension API.
 
 The full specification lives in [`docs/rail-spec.md`](./docs/rail-spec.md);
 the deployed site at <https://isnogudus.github.io/rail.js/> includes a
@@ -30,240 +38,289 @@ This README is the practical guide.
 npm install @isnogudus/rail.js
 ```
 
-ESM only. Node 22+ recommended (Node 20+ should also work; AbortSignal
-combination is implemented manually for portability).
+ESM only. Node 22+ recommended (Node ≥ 19 needed for `AbortSignal.any`).
 
 ## Quick start
 
 ```js
-import { activity, node, flow } from '@isnogudus/rail.js';
+import { activity, step, flow } from '@isnogudus/rail.js';
 
-const sendMessage = activity((a) => {
-  const start = a.entry('in');
-  const { success, failure } = a.standardExits();
-
-  const validate = a.addNode('validate', node(async (ctx) => {
-    if (!ctx.roomId) return 'invalid';
-    return { output: 'ok', ctx: { ...ctx, validated: true } };
-  }, { outputs: ['ok', 'invalid'] }));
-
-  const send = a.addNode('send', node(async (ctx) => {
-    // ... actual work ...
-    return 'ok';
-  }, { outputs: ['ok', 'failed'] }));
-
-  a.wire(start,                   validate);
-  a.wire(validate.out('ok'),      send);
-  a.wire(validate.out('invalid'), failure);
-  a.wire(send.out('ok'),          success);
-  a.wire(send.out('failed'),      failure);
+const greet = activity((a) => {
+  a.entry('in');
+  a.addNode('say', step(async (ctx) => {
+    ctx.message = `hello, ${ctx.name}`;
+  }));
+  a.exit('done');
+  a.wire('.in',          'say.success');
+  a.wire('say.success',  '.done');
+  a.wire('say.failure',  '.done');
 });
 
-// flow.run() auto-checks on the first call; an explicit `.check()`
-// is optional for early validation.
-const sendMessageFlow = flow('sendMessage', sendMessage);
-
-const result = await sendMessageFlow.run({ roomId: 'r-1' });
-// → { ctx: { roomId: 'r-1', validated: true }, trace: [...], terminus: 'success' }
+const result = await flow('greet', greet).run({ name: 'world' });
+// → { exit: 'done', ctx: { name: 'world', message: 'hello, world' }, trace: [...] }
 ```
 
-For runnable examples, see:
+For more, see:
 
 - [`example.js`](./example.js) — `npm run example` — overview demo
-  (sendMessage + parallel + recover + Mermaid)
 - [`examples/`](./examples/) — `npm run examples` — focused runnable
   files for each pattern:
 
   | File | Concept |
   |------|---------|
-  | [01-greet.js](./examples/01-greet.js) | minimal happy-path activity (§9.1) |
-  | [02-subactivity.js](./examples/02-subactivity.js) | sub-activity composition (§9.3) |
-  | [03-multi-input.js](./examples/03-multi-input.js) | multi-input ports + `runInfo.input` |
-  | [04-compile-error.js](./examples/04-compile-error.js) | check error reporting (§9.4) |
-  | [05-shared-node.js](./examples/05-shared-node.js) | reusing a node under multiple names (§9.8) |
-  | [06-toplevel-step.js](./examples/06-toplevel-step.js) | top-level Step-Node (§9.7) |
-  | [07-graph-error.js](./examples/07-graph-error.js) | `RailRuntimeError` propagation (§9.9) |
-  | [08-cancellation.js](./examples/08-cancellation.js) | cooperative cancellation (§9.10) |
-  | [09-custom-logger.js](./examples/09-custom-logger.js) | custom logger (§9.11) |
-  | [10-tracer.js](./examples/10-tracer.js) | structured tracer events (§9.12) |
-  | [11-merge.js](./examples/11-merge.js) | `merge()` patch helper |
-  | [12-typed-ctx.js](./examples/12-typed-ctx.js) | typed contexts + `ctxType` dispatch |
+  | [01-greet.js](./examples/01-greet.js) | minimal happy-path activity (§14.1) |
+  | [02-subactivity.js](./examples/02-subactivity.js) | sub-activity composition (§14.3) |
+  | [03-multi-input.js](./examples/03-multi-input.js) | multi-entry inner activity used through `pin` |
+  | [04-build-error.js](./examples/04-build-error.js) | `RailBuildError` from the builder (§14.4) |
+  | [05-shared-node.js](./examples/05-shared-node.js) | reusing a node under multiple names (§14.8) |
+  | [06-toplevel-step.js](./examples/06-toplevel-step.js) | top-level atomic node (§14.7) |
+  | [07-unhandled-throw.js](./examples/07-unhandled-throw.js) | `UNHANDLED_THROW` (§14.9) |
+  | [08-cancellation.js](./examples/08-cancellation.js) | cooperative cancellation + kill signal (§14.10) |
+  | [09-custom-logger.js](./examples/09-custom-logger.js) | custom logger (§14.11) |
+  | [10-tracer.js](./examples/10-tracer.js) | `(entry, event)` tracer (§14.12) |
+  | [11-parallel-merge.js](./examples/11-parallel-merge.js) | `parallel(branches, merge?)` (§14.5) |
+  | [12-nrail.js](./examples/12-nrail.js) | `nrail` with rails and cleanup (§14.14) |
   | [13-mermaid.js](./examples/13-mermaid.js) | Mermaid render (LR / TB) |
-  | [14-retry-loop.js](./examples/14-retry-loop.js) | retry loop with cycle + `local` (§9.13) |
-  | [15-concurrent-runs.js](./examples/15-concurrent-runs.js) | stateless flow + concurrent `run(...)` |
+  | [14-retry-loop.js](./examples/14-retry-loop.js) | retry loop with cycle + `local` (§14.13) |
+  | [15-concurrent-runs.js](./examples/15-concurrent-runs.js) | stateless flow + concurrent runs |
+  | [16-railway.js](./examples/16-railway.js) | `railway` two-track pipeline (§14.15) |
+  | [17-nrail-labels.js](./examples/17-nrail-labels.js) | `nrail` labels + links (backward + forward) (§6.11) |
+  | [18-aggregate-error.js](./examples/18-aggregate-error.js) | `RailAggregateError` from `parallel` (§8, §12.4) |
+  | [19-custom-kind.js](./examples/19-custom-kind.js) | custom node kind via `invokeNode` (§2, §15.3) |
+  | [20-nstep.js](./examples/20-nstep.js) | `nstep` string-or-array + nullish-return (§3.2) |
 
 ## Concepts at a glance
 
+| Concept | Has | Built via |
+|---------|-----|-----------|
+| **Node** | `__rail_type__: 'node'`, `__rail_kind__`, `inputs`, `outputs`, `_invoke` | `atom`/`nstep`/`step`/`pass`/`fail`, `pin`, `parallel` |
+| **Activity** (`'activity'`) | sub-nodes connected by wires | `activity(builder)`, `nrail(builderFn)`, `railway(builderFn)` |
+| **Parallel** (`'parallel'`) | branches + optional merge node | `parallel(branches, merge?)` |
+| **Pin** (`'pin'`) | a single inner node, transparent in the trace | `pin(node, entry)` |
+| **Flow** | a top-level node + a name | `flow(name, node)` |
+
 | Term | Meaning |
 |------|---------|
-| **Node** | Plain object with `railKind`, `inputs`, `outputs`, `check()`, `isChecked()`, and `invoke(name, ctx, runState, local)`. Three built-in kinds: `step`, `activity`, `parallel`. |
-| **Step-Node** (`railKind: 'step'`) | Wraps a user function. Created with `node(fn, { outputs })`. |
-| **Activity** (`railKind: 'activity'`) | A graph of named sub-nodes with one entry and one or more exits. Created with `activity(builderFn)`. |
-| **Parallel-Node** (`railKind: 'parallel'`) | Runs branches concurrently. Created with `parallel(branches)`. Always has output `'done'`. |
-| **Flow** | Top-level runtime wrapper. Created with `flow(name, node)`. Stateless — `flow.run(...)` allocates a fresh run-state per call, and auto-checks the held node on first run. |
-| **Wire** | A connection from a source endpoint (entry or node-output) to a target endpoint (exit or node-input). |
-| **Terminus** | The output reached at the top level — exposed on `RunResult.terminus`. |
-| **`local`** | A step's position-local workspace. Read as parameter, written via `StepReturn`, persisted per full path across invocations. |
+| **Wire** | A directed connection from a source endpoint (entry or sub-node output) to a target endpoint (exit or sub-node input). Written as a string: `'.entry'`, `'.exit'`, `'subName.port'`. |
+| **`ctx`** | The user-domain context. Flows by reference; user functions mutate it in place. `parallel` produces a `{ branchName: branchCtx }` aggregate. |
+| **`local`** | Per-position mutable storage; hierarchical for group nodes. `local._cycles` is the invocation count at the position. |
+| **`runInfo`** | Read-only context for atomic user functions: `{ signal, flowName, traceEntry }`. |
 
 ## Public API
 
 ```js
 import {
-  // Node factories
-  node, activity, parallel,
-  // Step helpers
-  merge, catching,
-  // Runtime
+  // Atomic builders (§3)
+  atom, nstep, step, pass, fail,
+  // User-function-level catch wrapper (§11)
+  catchTo,
+  // Wrapper (§4)
+  pin,
+  // Group builders (§5–§7)
+  activity, nrail, railway,
+  // Concurrent group (§8)
+  parallel,
+  // Flow (§9)
   flow,
-  // Typed-ctx helpers
-  exceptionCtx, isExceptionCtx, isParallelCtx, ctxType,
-  // Utilities
+  // Utilities (§10)
   isRailNode,
-  // Errors
-  RailBuildError, RailCheckError, RailRuntimeError,
+  // Extension API for custom kinds (§2, §15.3)
+  invokeNode,
+  // Errors (§12)
+  RailError, RailBuildError, RailRuntimeError, RailAggregateError,
 } from '@isnogudus/rail.js';
 ```
 
-### Step contract
-
-A step is a function
-`(ctx, local?, runInfo?) => StepReturn | Promise<StepReturn>`:
-
-```ts
-StepReturn =
-  | string                                  // shorthand: this output; ctx + local unchanged
-  | { output: string,
-      ctx?:   object,                       // replaces running ctx if present
-      local?: object }                      // replaces stored local if present
-```
-
-- **`ctx`** — the running ctx flowing through the workflow. Read it,
-  return a new one (spread!), or omit to leave unchanged.
-- **`local`** — the step's position-local workspace, pre-initialised to
-  `{}`. Persisted per full path when the step explicitly returns a
-  `local` field. Two positions of the same node instance have
-  independent locals. Ideal for retry counters, polling state, etc.
-- **`runInfo`** — `{ signal?, input, invocation, path }`. Library
-  metadata: cancellation signal, activated input port name, 1-based
-  invocation count for this position, and the full dotted path.
-  Intended for observability — for control flow, use `local`.
-
-### Retry / loop with `local`
-
-Cycles are valid in the wire graph. A retry loop modelled directly as
-graph topology, with the retry budget owned by the step:
+### Atomic builders
 
 ```js
-const op = a.addNode('op', node(async (ctx, local) => {
-  const tries = (local.tries ?? 0) + 1;
-  if (tries > 3) return { output: 'giveup', local: { tries } };
-  const r = await unreliableCall(ctx);
-  if (r.ok) return { output: 'ok', local: { tries } };
-  return { output: 'retry', local: { tries } };
-}, { outputs: ['ok', 'retry', 'giveup'] }));
+// Primitive: user function returns the exit name as a string.
+const myAtom = atom(async (ctx, local, runInfo) => {
+  ctx.touched = true;
+  return 'ok';
+}, { outputs: ['ok', 'retry'] });
 
-a.wire(op.out('retry'),  op);          // ← cycle, valid
-a.wire(op.out('ok'),     success);
-a.wire(op.out('giveup'), failure);
+// String-or-array convenience + nullish-return for single-output.
+const audit = nstep(async (ctx) => { /* no return needed */ }, 'in', 'ok');
+
+// Railway success/failure pattern — throws routed to 'failure'.
+const validate = step(async (ctx) => { if (!ctx.id) throw new Error('missing'); });
+
+// Best-effort: throws caught and routed to the only exit.
+const log    = pass(async (ctx) => { /* never affects control flow */ });
+const report = fail(async (ctx) => { /* best-effort on the failure rail */ });
 ```
 
-`check()` accepts this topology. What makes the loop terminate is the
-step's own logic, not graph structure. The `maxSteps` budget on
-`flow.run(...)` is the runtime backstop for unbounded loops.
+`step`, `pass`, and `fail` are built on `catchTo` (§11): they wrap
+the user function with a catch that sets `ctx._error` and routes to a
+fixed exit. `RailError` and `RailAggregateError` are always
+re-thrown — they terminate the run.
 
-### Building activities
+### Activity (`activity(builder)`)
+
+Wires are addressed by string references:
+
+| String | Meaning |
+|--------|---------|
+| `'.entry'` | the activity's own entry named `entry` |
+| `'.exit'`  | the activity's own exit named `exit`   |
+| `'name.port'` | sub-node `name`'s port `port` (input or output, depending on whether the string is used as the target or the source) |
 
 ```js
-activity((a) => {
-  const start = a.entry('in');         // exactly one entry per activity
-  const { success, failure } = a.standardExits();
+const wf = activity((a) => {
+  a.entry('in');
+  a.exit('done');
+  a.addNode('validate', step(validateFn));
+  a.addNode('send',     step(sendFn));
 
-  const v = a.addNode('validate', node(fn, { outputs: ['ok', 'bad'] }));
-
-  a.wire(start,           v);          // entry → node
-  a.wire(v.out('ok'),     success);    // node-output → exit
-  a.wire(v.out('bad'),    failure);
+  a.wire('.in',              'validate.success');
+  a.wire('validate.success', 'send.success');
+  a.wire('send.success',     '.done');
+  a.wire('validate.failure', '.done');
+  a.wire('send.failure',     '.done');
 });
 ```
 
-Validation runs in two distinct moments:
+Every builder method validates eagerly; the activity walks the
+assembled graph once at the end of construction and raises
+`RailBuildError` on missing wires, unreachable sub-nodes, etc.
+The closure must be synchronous (`ASYNC_BUILDER` otherwise) and the
+builder reference is sealed after the closure returns (`SEALED`).
 
-- **Eagerly at the builder call site (`RailBuildError`)** — picks up
-  structural mistakes the moment they happen, with a stack trace
-  pointing at the offending line: `INVALID_NAME`, `UNKNOWN_PORT`,
-  `NOT_A_NODE`, `INVALID_WIRE_DIRECTION`, `AMBIGUOUS_NODE_INPUT`,
-  `WIRE_FROM_OTHER_BUILDER`, `MULTIPLE_ENTRIES`, `DUPLICATE_NODE`,
-  `DUPLICATE_EXIT`, `MULTIPLE_OUTGOING_WIRES`, `MULTIPLE_ENTRY_WIRES`,
-  `NO_ENTRY`, `CATCHING_REQUIRES_STEP`.
+### n-Rail (`nrail(builderFn)`) and Railway (`railway(builderFn)`)
 
-- **`check()` after the builder closure (`RailCheckError`)** —
-  - **Completeness:** entry / node-output / exit wiring. Multiple wires
-    into the same node-input are **convergence** and intentionally
-    allowed (§7.5).
-  - **Topology:** forward reachability from entry + backward
-    reachability to any exit. `UNREACHABLE_NODE`, `UNREACHABLE_EXIT`,
-    `NO_EXIT_PATH`. Cycles are valid (§7.4); only structurally trapped
-    regions raise `NO_EXIT_PATH`.
+`nrail` is a convenience factory for pipelines with multiple parallel
+outcome tracks ("rails"). Steps consume and produce named rails; the
+builder maintains a build-time Live-Set of open wires. `railway` is a
+thin wrapper over `nrail` for two-track success/failure pipelines with
+automatic `catchTo` wrapping.
 
-`check()` is idempotent and recursive — sharing a node across
-activities checks it exactly once. `flow.run(...)` invokes `check()`
-automatically on the first call.
+```js
+const orderPipeline = nrail((r) => {
+  r.entry('main');
+  r.step('validate', validateFn, 'main', ['main', 'fail']);
+  r.step('charge',   chargeFn,   'main', ['main', 'retry', 'fail']);
+  r.step('logRetry', logRetryFn, 'retry', 'fail');
+  r.step('cleanup',  cleanupFn,  'fail', 'fail');
+});
 
-### Errors at runtime
+const sendMessage = railway((r) => {
+  r.step('validate', async (ctx) => { if (!ctx.body) throw new Error('body'); });
+  r.step('encrypt',  async (ctx, local, runInfo) => { /* ... */ });
+  r.fail('logError', async (ctx) => { console.error(ctx._error); });
+});
+```
 
-`flow.run(...)` resolves with a `RunResult { ctx, trace, terminus }`
-on success and rejects with a `RailRuntimeError` on a graph error
-(`UNKNOWN_OUTPUT_AT_RUNTIME`, `UNHANDLED_THROW`, `STEP_LIMIT_EXCEEDED`,
-`KILLED`, `LOGGER_FAILED`, `TRACER_FAILED`, `INVALID_SUB_NODE`,
-`INTERNAL`). The error always carries `flow`, `trace`, `ctx`, and
-optional `cause`.
+### Parallel (`parallel(branches, merge?)`)
 
-The library does **not** offer exception-mapping. Steps that interact
-with throwing code use `try`/`catch` themselves and either return a
-named output or wrap the error with `exceptionCtx(...)` for downstream
-inspection. The `catching(stepNode, mapping)` helper turns the
-common `try`/`catch` boilerplate into a declarative wrapper.
+Runs branches concurrently. Each branch receives a shallow copy of
+`ctx` and its own `local` slot. After all branches resolve, the
+parallel mutates the incoming `ctx` in place to the aggregated
+`{ branchName: branchCtx }` shape. Without a merge node, the parallel
+exits at `'out'`; with one, the merge node's outputs become the
+parallel's outputs.
+
+```js
+const enrich = parallel({
+  profile: fetchProfile,
+  orders:  fetchOrders,
+}, mergeResults);                       // optional merge node
+```
+
+If any branch rejects, sibling branches see `runInfo.signal.aborted`
+via the combined signal and may exit cooperatively. After
+`Promise.allSettled` collects all branches, the parallel throws a
+`RailAggregateError` (single class regardless of how many branches
+failed) with `branchErrors` keyed by branch name. The merge node is
+not invoked when any branch fails.
+
+### Cycles and `local`
+
+Cycles in the wire graph are first-class:
+
+```js
+const retrier = activity((a) => {
+  a.entry('in');
+  a.addNode('fetch', atom(async (ctx, local) => {
+    local.attempts = (local.attempts ?? 0) + 1;
+    try { ctx.data = await fetch(ctx.url); return 'ok'; }
+    catch (err) { return local.attempts < 3 ? 'retry' : 'giveUp'; }
+  }, { outputs: ['ok', 'retry', 'giveUp'] }));
+  a.exit('done');
+  a.exit('failed');
+  a.wire('.in',           'fetch.in');
+  a.wire('fetch.ok',      '.done');
+  a.wire('fetch.retry',   'fetch.in');   // cycle wire
+  a.wire('fetch.giveUp',  '.failed');
+});
+```
+
+The position's `local` persists across cycles within a single
+`flow.run(...)`. `local._cycles` (written by `invokeNode`) counts the
+invocations at this position. The run-global `maxSteps` budget
+(default `1000`) bounds total node invocations.
+
+### Errors
+
+```
+RailError
+├── RailBuildError      INVALID_NAME, NOT_A_NODE, UNUSED_PORT, …
+├── RailRuntimeError    UNHANDLED_THROW, UNKNOWN_OUTPUT_AT_RUNTIME,
+│                       STEP_BUDGET_EXCEEDED, KILLED, INTERNAL
+└── RailAggregateError  PARALLEL_BRANCH_FAILED  (branchErrors, errors[])
+```
+
+Use `err instanceof RailError` for the single membership test that
+covers every library-produced error, single or aggregate. Library
+errors do not carry the run trace or the ctx — register a tracer if
+you need post-mortem state inspection.
 
 ### Cancellation
 
-Two distinct mechanisms:
-- **Cooperative (`opts.signal`)** — exposed to steps via
-  `runInfo.signal`. The library performs no action on it itself;
-  steps decide how to react.
-- **Kill switch (`opts.killSignal`)** — checked by the runner before
-  each node. If aborted, the run rejects with `RailRuntimeError(KILLED)`.
+```js
+const ctrl = new AbortController();
+const result = await flow('myflow', wf).run({}, {
+  signal:     ctrl.signal,        // cooperative — exposed as runInfo.signal
+  killSignal: ctrl.signal,        // enforcing — invokeNode throws KILLED
+});
+```
 
-When both are passed, `runInfo.signal` is a derived signal that aborts
-when either input does.
+`runInfo.signal` is the combined signal (caller's `signal` ∪ caller's
+`killSignal` ∪ library's internal abort for parallel sibling failure).
+Only the raw `killSignal` triggers `RailRuntimeError(KILLED)`.
 
-### Tracer (live observation)
+### Tracer and logger
 
-Set `opts.tracer` to receive structured events at run / step /
-activity / branch lifecycle points. Each scope has a start event and
-either a success-end or a failure-end event. Every step / activity /
-branch event carries `invocation` and the current `local` snapshot
-alongside `step` / `name` and timing. See `docs/rail-spec.md` §6.8 for
-the full event shape — useful for live UIs that want to visualise a
-run as it happens.
+```js
+await flow('f', node).run(ctx, {
+  logger: (entry) => console.log(entry.path.join('.'), '->', entry.exit),
+  tracer: (entry, event) => bus.emit(event, entry),  // 'begin' | 'end'
+  loggerErrorPolicy: 'throw',     // default
+  tracerErrorPolicy: 'swallow',   // default
+});
+```
+
+The logger runs once per successfully completed step (after the
+tracer's `'end'`). The tracer runs synchronously at `'begin'` and
+`'end'`; pin is trace-transparent and emits nothing. Steps that throw
+a library error have no `'end'` event — their TraceEntry remains
+unfilled and the throw propagates.
 
 ### Mermaid
 
 ```js
-const m = sendMessageFlow.toMermaid();           // flowchart LR
-const m = sendMessageFlow.toMermaid({ direction: 'TB' });
-const m = sendMessage.toMermaid('sendMessage');  // direct on the activity
+const m = flow('myflow', node).toMermaid({ direction: 'LR' });
+const m2 = activity.toMermaid('myActivity');
 ```
 
-Sub-activities render as subroutine shapes (`[[name]]:::subActivity`),
-parallel-nodes as marker shapes (`{{name}}:::parallelNode`). Neither
-is expanded inline in the diagram.
+Sub-activities render as nested subgraphs; `parallel` renders as a
+`'parallel'`-labelled subgraph containing its branches and merge.
+`pin` is transparent in the diagram.
 
 ## Distribution
 
-This is a pure ES module published with a single entry point
-(`./rail.js`). The internal module split under `rail/` is an
-implementation detail — only the symbols re-exported from `rail.js`
-are part of the public API.
+Pure ES module, single entry point (`./rail.js`). Internal modules
+under `rail/` are implementation detail.
 
 ```jsonc
 {

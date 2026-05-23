@@ -1,110 +1,110 @@
-import { describe, it, expect } from 'vitest';
-import { activity, node, parallel, catching, flow } from '../rail.js';
+/**
+ * Mermaid renderer smoke tests — spec §2.4.
+ */
 
-describe('Mermaid render (§3.11, acceptance #26-#29)', () => {
-  it('flow.toMermaid() renders activity with all nodes and labelled edges (acceptance #26)', () => {
-    const send = catching(node(() => 'ok', { outputs: ['ok'] }),
-      { NetworkError: 'net5xx', AbortError: 'cancelled' });
+import { describe, expect, it } from 'vitest';
+import { activity, step, parallel, pin, atom, flow } from '../rail.js';
 
-    const sendMessage = activity((a) => {
-      const start = a.entry('in');
-      const { success, failure } = a.standardExits();
-      const validate = a.addNode('validate', node(() => 'ok', { outputs: ['ok', 'invalid'] }));
-      const encrypt = a.addNode('encrypt', node(() => 'ok', { outputs: ['ok', 'noKeys'] }));
-      const sendN = a.addNode('send', send);
-      a.wire(start, validate);
-      a.wire(validate.out('ok'), encrypt);
-      a.wire(validate.out('invalid'), failure);
-      a.wire(encrypt.out('ok'), sendN);
-      a.wire(encrypt.out('noKeys'), failure);
-      a.wire(sendN.out('ok'), success);
-      a.wire(sendN.out('net5xx'), failure);
-      a.wire(sendN.out('cancelled'), failure);
+describe('toMermaid', () => {
+  it('renders an activity as a flowchart with entry, node, exit', () => {
+    const wf = activity((a) => {
+      a.entry('in');
+      a.addNode('s', step(async () => {}));
+      a.exit('done');
+      a.wire('.in', 's.success');
+      a.wire('s.success', '.done');
+      a.wire('s.failure', '.done');
     });
-    sendMessage.check();
-
-    const m = flow('sendMessage', sendMessage).toMermaid();
+    const m = wf.toMermaid('myAct');
     expect(m).toContain('flowchart LR');
-    expect(m).toContain('start([in])');
-    expect(m).toContain('"validate"');
-    expect(m).toContain('"send"');
-    // send has three labeled outgoing edges
-    expect(m).toMatch(/n_send -- "ok" --> /);
-    expect(m).toMatch(/n_send -- "net5xx" --> /);
-    expect(m).toMatch(/n_send -- "cancelled" --> /);
-    // exits with class
-    expect(m).toContain('endExit_success');
-    expect(m).toContain('endExit_failure');
-    expect(m).toContain(':::exit');
-    // No dotted edges
-    expect(m).not.toMatch(/-\.->/);
-    // No subActivity / parallelNode classes (since no sub-act / parallel here)
-    expect(m).not.toContain(':::subActivity');
-    expect(m).not.toContain(':::parallelNode');
+    expect(m).toContain('"in"');
+    expect(m).toContain('"s"');
+    expect(m).toContain('"done"');
+    expect(m).toContain('classDef exit');
   });
 
-  it('renders sub-activity sub-node as subroutine + class (acceptance #27)', () => {
+  it('flow.toMermaid delegates to activity toMermaid with flow name', () => {
+    const wf = activity((a) => {
+      a.entry('in');
+      a.addNode('s', step(async () => {}));
+      a.exit('done');
+      a.wire('.in', 's.success');
+      a.wire('s.success', '.done');
+      a.wire('s.failure', '.done');
+    });
+    const m = flow('myflow', wf).toMermaid();
+    expect(m).toContain('%% myflow');
+  });
+
+  it('escapes HTML special characters in labels', () => {
+    const wf = activity((a) => {
+      a.entry('a&b');
+      a.addNode('s', step(async () => {}));
+      a.exit('<done>');
+      a.wire('.a&b', 's.success');
+      a.wire('s.success', '.<done>');
+      a.wire('s.failure', '.<done>');
+    });
+    const m = wf.toMermaid();
+    expect(m).toContain('"a&amp;b"');
+    expect(m).toContain('"&lt;done&gt;"');
+  });
+
+  it('renders sub-activity as a nested subgraph', () => {
     const inner = activity((a) => {
-      const start = a.entry('in');
-      const ok = a.exit('ok');
-      const s = a.addNode('s', node(() => 'ok', { outputs: ['ok'] }));
-      a.wire(start, s);
-      a.wire(s.out('ok'), ok);
+      a.entry('in');
+      a.addNode('x', step(async () => {}));
+      a.exit('done');
+      a.wire('.in', 'x.success');
+      a.wire('x.success', '.done');
+      a.wire('x.failure', '.done');
     });
     const outer = activity((a) => {
-      const start = a.entry('in');
-      const ok = a.exit('ok');
-      const i = a.addNode('inner', inner);
-      a.wire(start, i);
-      a.wire(i.out('ok'), ok);
+      a.entry('in');
+      a.addNode('child', pin(inner, 'in'));
+      a.exit('done');
+      a.wire('.in', 'child.in');
+      a.wire('child.done', '.done');
     });
-    outer.check();
-    const m = flow('w', outer).toMermaid();
-    expect(m).toContain('n_inner[[inner]]:::subActivity');
+    const m = outer.toMermaid();
+    expect(m).toContain('subgraph');
+    expect(m).toContain('"child"');
   });
 
-  it('renders parallel-node sub-node with parallelNode class (acceptance #28)', () => {
-    const par = parallel({ a: node(() => 'ok', { outputs: ['ok'] }) });
-    const wf = activity((a) => {
-      const start = a.entry('in');
-      const ok = a.exit('ok');
-      const fan = a.addNode('fan', par);
-      a.wire(start, fan);
-      a.wire(fan.out('done'), ok);
-    });
-    wf.check();
-    const m = flow('w', wf).toMermaid();
-    expect(m).toContain('n_fan{{fan}}:::parallelNode');
-  });
-
-  it('flow.toMermaid() for top-level Step-Node renders minimal diagram (acceptance #29)', () => {
-    const greet = node(() => ({ output: 'done', ctx: {} }), { outputs: ['done'] });
-    greet.check();
-    const m = flow('greet', greet).toMermaid();
+  it('renders a flow holding an atom with a minimal diagram', () => {
+    const n = atom(async () => 'ok', { outputs: ['ok'] });
+    const m = flow('greet', n).toMermaid();
     expect(m).toContain('flowchart LR');
-    expect(m).toContain('start([in])');
-    expect(m).toContain('n_greet["greet"]');
-    expect(m).toContain('endExit_done([done])');
-    expect(m).toMatch(/n_greet -- "done" --> endExit_done/);
+    expect(m).toContain('"in"');
+    expect(m).toContain('"ok"');
   });
 
-  it('activity.toMermaid(name) labels with provided name', () => {
-    const a = activity((a) => {
-      const start = a.entry('in');
-      const ok = a.exit('ok');
-      a.wire(start, ok);
+  it('renders parallel branches inside a subgraph', () => {
+    const p = parallel({
+      a: step(async () => {}),
+      b: step(async () => {}),
     });
-    a.check();
-    expect(a.toMermaid('greet')).toContain('flowchart LR');
+    const wf = activity((a) => {
+      a.entry('in');
+      a.addNode('par', p);
+      a.exit('done');
+      a.wire('.in', 'par.in');
+      a.wire('par.out', '.done');
+    });
+    const m = wf.toMermaid();
+    expect(m).toContain('subgraph');
+    expect(m).toContain('"parallel"');
   });
 
-  it('opts.direction: TB switches direction', () => {
-    const a = activity((a) => {
-      const start = a.entry('in');
-      const ok = a.exit('ok');
-      a.wire(start, ok);
+  it('supports direction option', () => {
+    const wf = activity((a) => {
+      a.entry('in');
+      a.addNode('s', step(async () => {}));
+      a.exit('done');
+      a.wire('.in', 's.success');
+      a.wire('s.success', '.done');
+      a.wire('s.failure', '.done');
     });
-    a.check();
-    expect(a.toMermaid('x', { direction: 'TB' })).toContain('flowchart TB');
+    expect(wf.toMermaid(undefined, { direction: 'TB' })).toContain('flowchart TB');
   });
 });

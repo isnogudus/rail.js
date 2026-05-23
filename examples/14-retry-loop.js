@@ -1,40 +1,48 @@
 /**
- * Retry pattern with `local` and a cycle (§9.13).
+ * §14.13 — Retry pattern with `local` and a cycle wire.
  *
- * Cycles in the wire graph are valid. The step uses its `local`
- * parameter to track retry attempts; the wire from `op.out('retry')`
- * loops back to `op`. After three tries, the step returns 'giveup'
- * and reaches the failure exit — modelled entirely in the graph
- * without any hidden library state.
+ * The `local` slot at the `fetch` position carries the attempt
+ * counter across cycles within a single `flow.run(...)`. A new run
+ * starts with a fresh empty `local`.
  */
 
-import { activity, node, flow } from '../rail.js';
+import { activity, atom, flow, RailError } from '../rail.js';
 
-const retryFlow = activity((a) => {
-  const start                = a.entry('in');
-  const { success, failure } = a.standardExits();
+let unreliableCalls = 0;
+async function fakeFetch(url) {
+  unreliableCalls++;
+  if (unreliableCalls < 3) throw new Error(`transient (${unreliableCalls})`);
+  return { url, body: 'OK' };
+}
 
-  const op = a.addNode('op', node(async (ctx, local) => {
-    const tries = (local.tries ?? 0) + 1;
-    if (tries > 3) return { output: 'giveup', local: { tries } };
+const fetchWithRetry = atom(async (ctx, local) => {
+  local.attempts ??= 0;
+  local.attempts++;
+  try {
+    ctx.data = await fakeFetch(ctx.url);
+    return 'ok';
+  } catch (err) {
+    if (err instanceof RailError) throw err;
+    if (local.attempts < 3) return 'retry';
+    ctx.lastError = err.message;
+    return 'giveUp';
+  }
+}, { outputs: ['ok', 'retry', 'giveUp'] });
 
-    // Simulated flaky operation: succeed on the 3rd attempt.
-    const ok = tries >= 3;
-    if (ok) return { output: 'ok', ctx: { ...ctx, attempts: tries }, local: { tries } };
-    return { output: 'retry', local: { tries } };
-  }, { outputs: ['ok', 'retry', 'giveup'] }));
-
-  a.wire(start,            op);
-  a.wire(op.out('retry'),  op);          // ← valid cycle
-  a.wire(op.out('ok'),     success);
-  a.wire(op.out('giveup'), failure);
+const retrier = activity((a) => {
+  a.entry('in');
+  a.addNode('fetch', fetchWithRetry);
+  a.exit('done');
+  a.exit('failed');
+  a.wire('.in',           'fetch.in');
+  a.wire('fetch.ok',      '.done');
+  a.wire('fetch.retry',   'fetch.in');   // cycle wire
+  a.wire('fetch.giveUp',  '.failed');
 });
 
-const main = flow('retry', retryFlow);
-const result = await main.run({}, { logger: () => {} });
-console.log('terminus:', result.terminus, '— attempts:', result.ctx.attempts);
-
-console.log('trace:');
-for (const t of result.trace) {
-  console.log(`  ${t.step} #${t.invocation} -> ${t.output}  local=${JSON.stringify(t.local)}`);
-}
+const r = await flow('retrier', retrier).run({ url: '/api/data' });
+console.log('exit:', r.exit);
+console.log('ctx :', r.ctx);
+// cycle counts visible in the trace:
+const fetchEntries = r.trace.filter((t) => t.path.join('.') === 'fetch');
+console.log('fetch cycles:', fetchEntries.map((e) => e.cycle));

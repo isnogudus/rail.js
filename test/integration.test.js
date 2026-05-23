@@ -1,350 +1,176 @@
 /**
- * End-to-end tests covering the §9 examples and the corresponding
- * acceptance criteria #1–#9 in §12.
+ * Integration tests — full scenarios from the spec §14.
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import {
-  activity,
-  node,
-  parallel,
-  catching,
-  flow,
-  exceptionCtx,
-  isExceptionCtx,
-  isParallelCtx,
-  RailRuntimeError,
+  activity, nrail, railway, parallel, pin, flow,
+  atom, nstep, step, pass, fail, catchTo,
+  RailError, RailRuntimeError,
 } from '../rail.js';
 
-const silent = { logger: () => {} };
+const noLog = () => {};
 
-describe('§9.2 sendMessage with catching (acceptance #1)', () => {
-  function buildSendMessage(sendFn) {
-    const sendMessage = activity((a) => {
-      const start = a.entry('in');
-      const { success, failure } = a.standardExits();
+describe('integration', () => {
+  it('§14.1 minimal happy path', async () => {
+    const validateEmail = atom(async (ctx) => {
+      if (typeof ctx.email === 'string' && ctx.email.includes('@')) return 'ok';
+      ctx.reason = 'invalid email';
+      return 'bad';
+    }, { outputs: ['ok', 'bad'] });
 
-      const validate = a.addNode('validate',
-        node(async (ctx) => {
-          if (!ctx.roomId) return 'invalid';
-          return { output: 'ok', ctx: { ...ctx, validated: true } };
-        }, { outputs: ['ok', 'invalid'] }));
-
-      const encrypt = a.addNode('encrypt',
-        node(async (ctx) => {
-          if (!ctx.keys) return 'noKeys';
-          return { output: 'ok', ctx: { ...ctx, encrypted: true } };
-        }, { outputs: ['ok', 'noKeys'] }));
-
-      const send = a.addNode('send', catching(
-        node(sendFn, { outputs: ['ok'] }),
-        { NetworkError: 'net5xx', AbortError: 'cancelled' }
-      ));
-
-      a.wire(start, validate);
-      a.wire(validate.out('ok'), encrypt);
-      a.wire(validate.out('invalid'), failure);
-      a.wire(encrypt.out('ok'), send);
-      a.wire(encrypt.out('noKeys'), failure);
-      a.wire(send.out('ok'), success);
-      a.wire(send.out('net5xx'), failure);
-      a.wire(send.out('cancelled'), failure);
+    const wf = activity((a) => {
+      a.entry('in');
+      a.addNode('check', validateEmail);
+      a.exit('success');
+      a.exit('failure');
+      a.wire('.in',         'check.in');
+      a.wire('check.ok',    '.success');
+      a.wire('check.bad',   '.failure');
     });
-    sendMessage.check();
-    return sendMessage;
-  }
 
-  it('happy path → terminus=success', async () => {
-    const wf = buildSendMessage(async () => 'ok');
-    const r = await flow('sendMessage', wf).run({ roomId: 'r', keys: 'k' }, silent);
-    expect(r.terminus).toBe('success');
-    expect(r.ctx.validated).toBe(true);
-    expect(r.ctx.encrypted).toBe(true);
+    const r = await flow('validate-only', wf).run({ email: 'me@example.com' }, { logger: noLog });
+    expect(r.exit).toBe('success');
+    expect(r.ctx.email).toBe('me@example.com');
+    expect(r.trace.length).toBeGreaterThan(0);
   });
 
-  it('invalid input → terminus=failure', async () => {
-    const wf = buildSendMessage(async () => 'ok');
-    const r = await flow('sendMessage', wf).run({ keys: 'k' }, silent);
-    expect(r.terminus).toBe('failure');
+  it('§14.13 retry with local', async () => {
+    let calls = 0;
+    const fetchWithRetry = atom(async (ctx, local) => {
+      local.attempts ??= 0;
+      local.attempts++;
+      calls++;
+      if (calls < 3) return 'retry';
+      ctx.data = 'OK';
+      return 'ok';
+    }, { outputs: ['ok', 'retry', 'giveUp'] });
+
+    const retrier = activity((a) => {
+      a.entry('in');
+      a.addNode('fetch', fetchWithRetry);
+      a.exit('done');
+      a.exit('failed');
+      a.wire('.in',           'fetch.in');
+      a.wire('fetch.ok',      '.done');
+      a.wire('fetch.retry',   'fetch.in');
+      a.wire('fetch.giveUp',  '.failed');
+    });
+
+    const r = await flow('retrier', retrier).run({}, { logger: noLog });
+    expect(r.exit).toBe('done');
+    expect(r.ctx.data).toBe('OK');
+    // The same position has cycle=3 by the last entry.
+    const fetchEntries = r.trace.filter((t) => t.path.join('.') === 'fetch');
+    expect(fetchEntries.map((e) => e.cycle)).toEqual([1, 2, 3]);
   });
 
-  it('encrypt noKeys → terminus=failure', async () => {
-    const wf = buildSendMessage(async () => 'ok');
-    const r = await flow('sendMessage', wf).run({ roomId: 'r' }, silent);
-    expect(r.terminus).toBe('failure');
+  it('parallel with merge produces domain-shaped ctx', async () => {
+    const mergeResults = atom(async (ctx) => {
+      const userId  = ctx.profile.userId;
+      const profile = ctx.profile.profile;
+      const orders  = ctx.orders.orders;
+      for (const k of Object.keys(ctx)) delete ctx[k];
+      ctx.userId = userId;
+      ctx.profile = profile;
+      ctx.orders = orders;
+      return 'out';
+    }, { outputs: ['out'] });
+
+    const enrich = parallel({
+      profile: step(async (ctx) => { ctx.profile = 'P-' + ctx.userId; }),
+      orders:  step(async (ctx) => { ctx.orders  = 'O-' + ctx.userId; }),
+    }, mergeResults);
+
+    const r = await flow('enrich', enrich).run({ userId: 'u1' }, { logger: noLog });
+    expect(r.exit).toBe('out');
+    expect(r.ctx).toEqual({ userId: 'u1', profile: 'P-u1', orders: 'O-u1' });
   });
 
-  it('NetworkError mapped via catching → failure (acceptance #1)', async () => {
-    class NetworkError extends Error { constructor(m) { super(m); this.name = 'NetworkError'; } }
-    const wf = buildSendMessage(async () => { throw new NetworkError('5xx'); });
-    const r = await flow('sendMessage', wf).run({ roomId: 'r', keys: 'k' }, silent);
-    expect(r.terminus).toBe('failure');
-  });
-});
+  it('nrail with cleanup chain converges fail rail', async () => {
+    let cleaned = 0;
+    const wf = nrail((r) => {
+      r.entry('main');
+      r.step('validate', catchTo(async (ctx) => {
+        if (!ctx.ok) throw new Error('bad');
+        return 'main';
+      }, 'fail'), 'main', ['main', 'fail']);
+      r.step('charge', catchTo(async (ctx) => {
+        ctx.charged = true;
+        return 'main';
+      }, 'fail'), 'main', ['main', 'fail']);
+      r.step('cleanup', async (ctx) => { ctx.cleaned = ++cleaned; }, 'fail', 'fail');
+    });
+    expect(wf.outputs).toEqual(['main', 'fail']);
 
-describe('§9.3 sub-activity composition (acceptance #2)', () => {
-  it('outer compile recursively compiles inner; trace prefixes inner steps', async () => {
+    const ok = await flow('p', wf).run({ ok: true }, { logger: noLog });
+    expect(ok.exit).toBe('main');
+    expect(ok.ctx.charged).toBe(true);
+
+    const bad = await flow('p', wf).run({ ok: false }, { logger: noLog });
+    expect(bad.exit).toBe('fail');
+    expect(bad.ctx.cleaned).toBe(1);
+  });
+
+  it('railway with mixed step/pass/fail', async () => {
+    const wf = railway((r) => {
+      r.step('a', async (ctx) => { ctx.a = 1; });
+      r.pass('logA', async (ctx) => { ctx.loggedA = true; });
+      r.step('b', async () => { throw new Error('b-fails'); });
+      r.fail('cleanup', async (ctx) => { ctx.cleanedUp = true; });
+    });
+    const r = await flow('rw', wf).run({}, { logger: noLog });
+    expect(r.exit).toBe('failure');
+    expect(r.ctx.a).toBe(1);
+    expect(r.ctx.loggedA).toBe(true);
+    expect(r.ctx.cleanedUp).toBe(true);
+    expect(r.ctx._error.message).toBe('b-fails');
+  });
+
+  it('multi-entry inner activity used with two different pins gets independent locals', async () => {
     const inner = activity((a) => {
-      const s = a.entry('in');
-      const { success, failure } = a.standardExits();
-      const encrypt = a.addNode('encrypt',
-        node((c) => ({ output: 'ok', ctx: { ...c, e: 1 } }), { outputs: ['ok', 'noKeys'] }));
-      const send = a.addNode('send',
-        node(() => 'ok', { outputs: ['ok', 'net5xx'] }));
-      a.wire(s, encrypt);
-      a.wire(encrypt.out('ok'), send);
-      a.wire(encrypt.out('noKeys'), failure);
-      a.wire(send.out('ok'), success);
-      a.wire(send.out('net5xx'), failure);
+      a.entry('start');
+      a.addNode('count', atom(async (_ctx, local) => {
+        local.n = (local.n ?? 0) + 1;
+        return 'ok';
+      }, { outputs: ['ok'] }));
+      a.exit('done');
+      a.wire('.start', 'count.in');
+      a.wire('count.ok', '.done');
     });
-
     const outer = activity((a) => {
-      const start = a.entry('in');
-      const { success, failure } = a.standardExits();
-      const preflight = a.addNode('preflight',
-        node(() => 'ok', { outputs: ['ok', 'skip'] }));
-      const wrapped = a.addNode('inner', inner);
-      a.wire(start, preflight);
-      a.wire(preflight.out('ok'), wrapped);
-      a.wire(preflight.out('skip'), success);
-      a.wire(wrapped.out('success'), success);
-      a.wire(wrapped.out('failure'), failure);
+      a.entry('in');
+      a.addNode('p1', pin(inner, 'start'));
+      a.addNode('p2', pin(inner, 'start'));
+      a.exit('done');
+      a.wire('.in', 'p1.in');
+      a.wire('p1.done', 'p2.in');
+      a.wire('p2.done', '.done');
     });
-    outer.check();
-    expect(inner.isChecked()).toBe(true);
-
-    const r = await flow('outer', outer).run({}, silent);
-    expect(r.terminus).toBe('success');
-    const stepNames = r.trace.map((e) => e.step);
-    expect(stepNames).toContain('preflight');
-    expect(stepNames).toContain('inner.encrypt');
-    expect(stepNames).toContain('inner.send');
-    expect(stepNames).toContain('inner');
-
-    // depth field
-    const innerEncrypt = r.trace.find((e) => e.step === 'inner.encrypt');
-    const innerCompound = r.trace.find((e) => e.step === 'inner');
-    const preflight = r.trace.find((e) => e.step === 'preflight');
-    expect(preflight.depth).toBe(0);
-    expect(innerCompound.depth).toBe(0);
-    expect(innerEncrypt.depth).toBe(1);
-  });
-});
-
-describe('§9.5 parallel + evaluate (acceptance #3)', () => {
-  function makeBranch(field, value) {
-    return activity((a) => {
-      const s = a.entry('in');
-      const { success, failure } = a.standardExits();
-      const fetch = a.addNode('fetch',
-        node((c) => ({ output: 'success', ctx: { ...c, [field]: value } }),
-          { outputs: ['success', 'failure'] }));
-      a.wire(s, fetch);
-      a.wire(fetch.out('success'), success);
-      a.wire(fetch.out('failure'), failure);
-    });
-  }
-  const profileBranch = makeBranch('profile', { id: 1 });
-  const keysBranch = makeBranch('keys', ['k1']);
-
-  function makeWf() {
-    const wf = activity((a) => {
-      const start = a.entry('in');
-      const ok = a.exit('ok');
-      const failed = a.exit('failed');
-      const fan = a.addNode('parallel',
-        parallel({ profile: profileBranch, keys: keysBranch }));
-      const evaluate = a.addNode('evaluate', node((ctx) => {
-        if (!isParallelCtx(ctx)) return 'failed';
-        const { inputCtx, results } = ctx;
-        if (results.profile.terminus !== 'success' ||
-            results.keys.terminus !== 'success') {
-          return { output: 'failed', ctx: { ...inputCtx, errored: true } };
-        }
-        return {
-          output: 'ok',
-          ctx: {
-            ...inputCtx,
-            profile: results.profile.ctx.profile,
-            keys: results.keys.ctx.keys,
-          },
-        };
-      }, { outputs: ['ok', 'failed'] }));
-      a.wire(start, fan);
-      a.wire(fan.out('done'), evaluate);
-      a.wire(evaluate.out('ok'), ok);
-      a.wire(evaluate.out('failed'), failed);
-    });
-    wf.check();
-    return wf;
-  }
-
-  it('happy path: both branches succeed → ok', async () => {
-    const r = await flow('wf', makeWf()).run({}, silent);
-    expect(r.terminus).toBe('ok');
-    expect(r.ctx.profile).toEqual({ id: 1 });
-    expect(r.ctx.keys).toEqual(['k1']);
+    const r = await flow('f', outer).run({}, { logger: noLog });
+    expect(r.exit).toBe('done');
+    // Each pin position has cycle=1 for its inner 'count'.
+    const countEntries = r.trace.filter((t) => t.path[t.path.length - 1] === 'count');
+    expect(countEntries.length).toBe(2);
+    expect(countEntries.map((e) => e.cycle)).toEqual([1, 1]);
   });
 
-  it('one branch fails (its inner node throws) → run rejects with RailRuntimeError', async () => {
-    const failingBranch = activity((a) => {
-      const s = a.entry('in');
-      const { success, failure } = a.standardExits();
-      const f = a.addNode('f', node(() => { throw new Error('branch'); },
-        { outputs: ['ok'] }));
-      a.wire(s, f);
-      a.wire(f.out('ok'), success);
-      // failure unwired — but wait, that'd fail at compile.
-    });
-    // Make failure-wiring valid:
-    const fb = activity((a) => {
-      const s = a.entry('in');
-      const ok = a.exit('ok');
-      const f = a.addNode('f', node(() => { throw new Error('branch'); },
-        { outputs: ['ok'] }));
-      a.wire(s, f);
-      a.wire(f.out('ok'), ok);
-    });
-    const par = parallel({ a: fb });
+  it('uncaught throw out of an atom becomes RailRuntimeError(UNHANDLED_THROW)', async () => {
     const wf = activity((a) => {
-      const start = a.entry('in');
-      const ok = a.exit('ok');
-      const fan = a.addNode('fan', par);
-      a.wire(start, fan);
-      a.wire(fan.out('done'), ok);
+      a.entry('in');
+      a.addNode('boom', atom(async () => { throw new Error('boom'); }, { outputs: ['ok'] }));
+      a.exit('done');
+      a.wire('.in', 'boom.in');
+      a.wire('boom.ok', '.done');
     });
-    wf.check();
     try {
-      await flow('wf', wf).run({}, silent);
-      throw new Error('expected throw');
+      await flow('f', wf).run({}, { logger: noLog });
+      throw new Error('should have thrown');
     } catch (e) {
       expect(e).toBeInstanceOf(RailRuntimeError);
       expect(e.code).toBe('UNHANDLED_THROW');
-    }
-  });
-});
-
-describe('§9.6 exceptionCtx + downstream evaluator (acceptance #4)', () => {
-  it('passes typed exception ctx to recover, decides recovery', async () => {
-    const robust = activity((a) => {
-      const start = a.entry('in');
-      const { success, failure } = a.standardExits();
-
-      const op = a.addNode('op', node(async (ctx) => {
-        try {
-          if (ctx.kind === 'throw-timeout') {
-            const e = new Error('t/o'); e.name = 'TimeoutError'; throw e;
-          }
-          if (ctx.kind === 'throw-fatal') {
-            const e = new Error('fatal'); e.name = 'FatalError'; throw e;
-          }
-          return { output: 'ok', ctx: { ...ctx, result: 42 } };
-        } catch (e) {
-          return { output: 'failed', ctx: exceptionCtx(e, ctx) };
-        }
-      }, { outputs: ['ok', 'failed'] }));
-
-      const recover = a.addNode('recover', node((ctx) => {
-        if (!isExceptionCtx(ctx)) return { output: 'fatal', ctx };
-        const { inputCtx, error } = ctx;
-        if (error.name === 'TimeoutError') {
-          return { output: 'ok', ctx: { ...inputCtx, retried: true } };
-        }
-        return { output: 'fatal', ctx: { ...inputCtx, lastError: error } };
-      }, { outputs: ['ok', 'fatal'] }));
-
-      a.wire(start, op);
-      a.wire(op.out('ok'), success);
-      a.wire(op.out('failed'), recover);
-      a.wire(recover.out('ok'), success);
-      a.wire(recover.out('fatal'), failure);
-    });
-    robust.check();
-
-    const ok = await flow('r', robust).run({ kind: 'ok' }, silent);
-    expect(ok.terminus).toBe('success');
-    expect(ok.ctx.result).toBe(42);
-
-    const recoverable = await flow('r', robust).run({ kind: 'throw-timeout' }, silent);
-    expect(recoverable.terminus).toBe('success');
-    expect(recoverable.ctx.retried).toBe(true);
-
-    const fatal = await flow('r', robust).run({ kind: 'throw-fatal' }, silent);
-    expect(fatal.terminus).toBe('failure');
-    expect(fatal.ctx.lastError?.name).toBe('FatalError');
-  });
-});
-
-describe('§9.7 top-level Step-Node (acceptance #5)', () => {
-  it('flow holds a Step-Node directly', async () => {
-    const greet = node(async (ctx) => ({
-      output: 'done',
-      ctx: { ...ctx, msg: `Hi ${ctx.name}` },
-    }), { outputs: ['done'] });
-    greet.check();
-    const r = await flow('greet', greet).run({ name: 'M' }, silent);
-    expect(r.terminus).toBe('done');
-    expect(r.ctx.msg).toBe('Hi M');
-  });
-});
-
-describe('§9.8 reusing a node under multiple names (acceptance #6)', () => {
-  it('shared step is compiled exactly once', () => {
-    const validateNode = node(() => 'ok', { outputs: ['ok'] });
-    let compileCount = 0;
-    const orig = validateNode.check.bind(validateNode);
-    validateNode.check = () => { compileCount++; orig(); };
-
-    const flowA = activity((a) => {
-      const s = a.entry('in');
-      const ok = a.exit('ok');
-      const v = a.addNode('validate', validateNode);
-      a.wire(s, v);
-      a.wire(v.out('ok'), ok);
-    });
-    flowA.check();
-    expect(validateNode.isChecked()).toBe(true);
-    const compileCountAfterA = compileCount;
-
-    // Reusing the same node under different names in another activity.
-    const flowB = activity((a) => {
-      const s = a.entry('in');
-      const ok = a.exit('ok');
-      const v1 = a.addNode('first', validateNode);
-      const v2 = a.addNode('second', validateNode);
-      a.wire(s, v1);
-      a.wire(v1.out('ok'), v2);
-      a.wire(v2.out('ok'), ok);
-    });
-    flowB.check();
-
-    // The actual `_compiled` work happens only once: subsequent
-    // recursive `compile()` calls short-circuit via the flag. The
-    // wrapper above counts every call regardless, so just verify the
-    // node is compiled and usable.
-    expect(validateNode.isChecked()).toBe(true);
-    expect(compileCount).toBeGreaterThanOrEqual(compileCountAfterA);
-  });
-});
-
-describe('§9.9 graph error vs domain error (acceptance #7)', () => {
-  it('typo in step output → RailRuntimeError(UNKNOWN_OUTPUT_AT_RUNTIME)', async () => {
-    const def = activity((a) => {
-      const start = a.entry('in');
-      const success = a.exit('success');
-      const stepNode = a.addNode('step', node(() => 'okk', { outputs: ['ok'] }));
-      a.wire(start, stepNode);
-      a.wire(stepNode.out('ok'), success);
-    });
-    def.check();
-    try {
-      await flow('typo', def).run({}, silent);
-      throw new Error('expected throw');
-    } catch (e) {
-      expect(e).toBeInstanceOf(RailRuntimeError);
-      expect(e.code).toBe('UNKNOWN_OUTPUT_AT_RUNTIME');
-      expect(e.flow).toBe('typo');
-      expect(e.trace.length).toBeGreaterThan(0);
+      expect(e.flowName).toBe('f');
+      expect(e.cause?.message).toBe('boom');
     }
   });
 });

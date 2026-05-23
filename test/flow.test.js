@@ -1,97 +1,286 @@
-import { describe, it, expect } from 'vitest';
+/**
+ * flow — spec §9. Acceptance §16.11–§16.14.
+ */
+
+import { describe, expect, it } from 'vitest';
 import {
-  activity,
-  node,
-  flow,
-  RailBuildError,
-  RailRuntimeError,
+  flow, atom, step, activity, pin, parallel,
+  RailBuildError, RailRuntimeError, RailError,
 } from '../rail.js';
 
-const silent = { logger: () => {} };
+const noLog = () => {};
 
-function trivialActivity() {
-  const a = activity((a) => {
-    const start = a.entry('in');
-    const ok = a.exit('ok');
-    const s = a.addNode('s', node(() => 'ok', { outputs: ['ok'] }));
-    a.wire(start, s);
-    a.wire(s.out('ok'), ok);
-  });
-  a.check();
-  return a;
-}
-
-describe('flow(name, node) factory (§3.6, §5.4)', () => {
-  it('INVALID_NAME (acceptance #17)', () => {
-    const a = trivialActivity();
-    try { flow('', a); throw new Error('no throw'); } catch (e) {
-      expect(e).toBeInstanceOf(RailBuildError);
-      expect(e.code).toBe('INVALID_NAME');
-    }
-    try { flow(/** @type {any} */ (null), a); throw new Error('no throw'); } catch (e) {
-      expect(e.code).toBe('INVALID_NAME');
-    }
-    try { flow('with.dot', a); throw new Error('no throw'); } catch (e) {
-      expect(e.code).toBe('INVALID_NAME');
-    }
+describe('flow construction', () => {
+  it('returns { name, node, run, toMermaid }', () => {
+    const f = flow('x', step(async () => {}));
+    expect(f.name).toBe('x');
+    expect(typeof f.run).toBe('function');
+    expect(typeof f.toMermaid).toBe('function');
   });
 
-  it('NOT_A_NODE (acceptance #16)', () => {
-    try { flow('f', /** @type {any} */ ({})); throw new Error('no throw'); } catch (e) {
-      expect(e).toBeInstanceOf(RailBuildError);
+  it('rejects empty/whitespace name with INVALID_NAME', () => {
+    expect(() => flow('', step(async () => {}))).toThrow(RailBuildError);
+    expect(() => flow('  ', step(async () => {}))).toThrow(RailBuildError);
+  });
+
+  it('rejects non-node second arg with NOT_A_NODE', () => {
+    try {
+      flow('f', { hi: 1 });
+      throw new Error('should have thrown');
+    } catch (e) {
       expect(e.code).toBe('NOT_A_NODE');
     }
   });
 
-  it('flow.run() auto-checks an unchecked node (acceptance #15)', async () => {
-    const a = activity((a) => {
-      const start = a.entry('in');
-      const ok = a.exit('ok');
-      const s = a.addNode('s', node(() => 'ok', { outputs: ['ok'] }));
-      a.wire(start, s);
-      a.wire(s.out('ok'), ok);
-    });
-    expect(a.isChecked()).toBe(false);
-    const f = flow('f', a);
-    expect(a.isChecked()).toBe(false);   // factory does NOT check
-    const r = await f.run({}, silent);
-    expect(a.isChecked()).toBe(true);
-    expect(r.terminus).toBe('ok');
+  it('rejects multi-input node with MULTI_INPUT_NODE', () => {
+    const multi = atom(async () => 'ok', { inputs: ['a', 'b'], outputs: ['ok'] });
+    try {
+      flow('f', multi);
+      throw new Error('should have thrown');
+    } catch (e) {
+      expect(e.code).toBe('MULTI_INPUT_NODE');
+    }
   });
 
-  it('returns a stateless plain object (acceptance #32)', async () => {
-    const a = trivialActivity();
-    const f = flow('f', a);
-    expect(typeof f.run).toBe('function');
-    expect(typeof f.toMermaid).toBe('function');
-    expect(f.name).toBe('f');
-    expect(f.node).toBe(a);
-    expect(f.constructor.name).toBe('Object');
+  it('accepts a pin-wrapped multi-input node', () => {
+    const multi = atom(async () => 'ok', { inputs: ['a', 'b'], outputs: ['ok'] });
+    const f = flow('f', pin(multi, 'a'));
+    expect(f).toBeTruthy();
+  });
+});
 
-    // Concurrent runs are independent.
-    const [r1, r2, r3] = await Promise.all([
-      f.run({ n: 1 }, silent),
-      f.run({ n: 2 }, silent),
-      f.run({ n: 3 }, silent),
+describe('flow.run', () => {
+  it('defaults ctx to {}', async () => {
+    const n = atom(async (ctx) => { ctx.touched = true; return 'ok'; }, { outputs: ['ok'] });
+    const r = await flow('f', n).run(undefined, { logger: noLog });
+    expect(r.ctx.touched).toBe(true);
+    expect(r.exit).toBe('ok');
+  });
+
+  it('returns RunResult shape { exit, ctx, trace }', async () => {
+    const r = await flow('f', step(async () => {})).run({}, { logger: noLog });
+    expect(Object.keys(r).sort()).toEqual(['ctx', 'exit', 'trace']);
+  });
+
+  it('wraps non-library throws as UNHANDLED_THROW', async () => {
+    const n = atom(async () => { throw new Error('oops'); }, { outputs: ['ok'] });
+    try {
+      await flow('f', n).run({}, { logger: noLog });
+      throw new Error('should have thrown');
+    } catch (e) {
+      expect(e).toBeInstanceOf(RailRuntimeError);
+      expect(e.code).toBe('UNHANDLED_THROW');
+      expect(e.flowName).toBe('f');
+      expect(e.cause).toBeInstanceOf(Error);
+      expect(e.cause.message).toBe('oops');
+    }
+  });
+
+  it('propagates RailError with flowName set', async () => {
+    const n = atom(async () => 'xx', { outputs: ['ok'] }); // unknown output
+    try {
+      await flow('myflow', n).run({}, { logger: noLog });
+      throw new Error('should have thrown');
+    } catch (e) {
+      expect(e).toBeInstanceOf(RailError);
+      expect(e.code).toBe('UNKNOWN_OUTPUT_AT_RUNTIME');
+      expect(e.flowName).toBe('myflow');
+    }
+  });
+
+  it('supports concurrent runs on the same flow', async () => {
+    let counter = 0;
+    const n = atom(async (ctx) => {
+      ctx.start = counter++;
+      await new Promise((r) => setTimeout(r, 10));
+      ctx.end = counter++;
+      return 'ok';
+    }, { outputs: ['ok'] });
+    const f = flow('f', n);
+    const [r1, r2] = await Promise.all([
+      f.run({}, { logger: noLog }),
+      f.run({}, { logger: noLog }),
     ]);
-    expect(r1.ctx.n).toBe(1);
-    expect(r2.ctx.n).toBe(2);
-    expect(r3.ctx.n).toBe(3);
+    expect(r1.exit).toBe('ok');
+    expect(r2.exit).toBe('ok');
+    // Both runs touched the same node concurrently — they shared the
+    // counter but had independent ctx and trace.
+    expect(r1.ctx).not.toBe(r2.ctx);
+    expect(r1.trace).not.toBe(r2.trace);
   });
 
-  it('RunResult has terminus, ctx, trace', async () => {
-    const a = activity((a) => {
-      const start = a.entry('in');
-      const ok = a.exit('ok');
-      const s = a.addNode('s', node((c) => ({ output: 'ok', ctx: { ...c, x: 1 } }),
-        { outputs: ['ok'] }));
-      a.wire(start, s);
-      a.wire(s.out('ok'), ok);
+  it('top-level step run produces a single trace entry with the right shape', async () => {
+    const r = await flow('greet', step(async (ctx) => { ctx.g = true; })).run({}, { logger: noLog });
+    expect(r.exit).toBe('success');
+    expect(r.ctx.g).toBe(true);
+    expect(r.trace.length).toBe(1);
+    const e = r.trace[0];
+    expect(e.path).toEqual([]);
+    expect(e.kind).toBe('atom');
+    expect(e.cycle).toBe(1);
+    expect(e.entry).toBe('success');
+    expect(e.exit).toBe('success');
+    expect(typeof e.startTime).toBe('number');
+    expect(typeof e.endTime).toBe('number');
+    expect(e.endTime).toBeGreaterThanOrEqual(e.startTime);
+  });
+});
+
+describe('trace shape (§16.3)', () => {
+  it('ctx and local are shallow snapshots taken at push time', async () => {
+    const n = atom(async (ctx) => { ctx.late = true; return 'ok'; }, { outputs: ['ok'] });
+    const r = await flow('f', n).run({ early: 1 }, { logger: noLog });
+    expect(r.trace[0].ctx).toEqual({ early: 1 });
+    expect(r.trace[0].ctx.late).toBeUndefined();
+  });
+
+  it('on throw the entry remains unfilled (no endTime, no exit)', async () => {
+    const n = atom(async () => { throw new Error('x'); }, { outputs: ['ok'] });
+    let traceCapture;
+    try {
+      await flow('f', n).run({}, {
+        logger: noLog,
+        tracer: (entry, _ev) => { traceCapture = entry; },
+      });
+    } catch {}
+    expect(traceCapture.endTime).toBeUndefined();
+    expect(traceCapture.exit).toBeUndefined();
+  });
+
+  it('trace contains exactly one entry per successful step', async () => {
+    const wf = activity((a) => {
+      a.entry('in');
+      a.addNode('a', step(async () => {}));
+      a.addNode('b', step(async () => {}));
+      a.exit('done');
+      a.wire('.in', 'a.success');
+      a.wire('a.success', 'b.success');
+      a.wire('a.failure', '.done');
+      a.wire('b.success', '.done');
+      a.wire('b.failure', '.done');
     });
-    a.check();
-    const r = await flow('f', a).run({ y: 2 }, silent);
-    expect(r.terminus).toBe('ok');
-    expect(r.ctx).toEqual({ y: 2, x: 1 });
-    expect(r.trace.length).toBeGreaterThan(0);
+    const r = await flow('f', wf).run({}, { logger: noLog });
+    // 1 activity + 2 sub-atoms = 3 entries.
+    expect(r.trace.length).toBe(3);
+  });
+});
+
+describe('tracer (§16.4)', () => {
+  it('emits begin and end events for every successfully completed step', async () => {
+    const events = [];
+    const wf = activity((a) => {
+      a.entry('in');
+      a.addNode('s', step(async () => {}));
+      a.exit('done');
+      a.wire('.in', 's.success');
+      a.wire('s.success', '.done');
+      a.wire('s.failure', '.done');
+    });
+    await flow('f', wf).run({}, {
+      logger: noLog,
+      tracer: (entry, event) => events.push({ event, path: entry.path.join('.') }),
+    });
+    expect(events).toEqual([
+      { event: 'begin', path: '' },
+      { event: 'begin', path: 's' },
+      { event: 'end',   path: 's' },
+      { event: 'end',   path: '' },
+    ]);
+  });
+
+  it('on step throw, no end event for that step', async () => {
+    const events = [];
+    const wf = activity((a) => {
+      a.entry('in');
+      a.addNode('s', atom(async () => { throw new Error('boom'); }, { outputs: ['ok'] }));
+      a.exit('done');
+      a.wire('.in', 's.in');
+      a.wire('s.ok', '.done');
+    });
+    try {
+      await flow('f', wf).run({}, {
+        logger: noLog,
+        tracer: (entry, event) => events.push({ event, path: entry.path.join('.') }),
+      });
+    } catch {}
+    const sEvents = events.filter((e) => e.path === 's');
+    expect(sEvents).toEqual([{ event: 'begin', path: 's' }]);
+  });
+
+  it('swallow policy drops tracer exceptions (default)', async () => {
+    const wf = step(async () => {});
+    const r = await flow('f', wf).run({}, {
+      logger: noLog,
+      tracer: () => { throw new Error('tracer bug'); },
+    });
+    expect(r.exit).toBe('success');
+  });
+
+  it('throw policy propagates tracer exceptions', async () => {
+    await expect(flow('f', step(async () => {})).run({}, {
+      logger: noLog,
+      tracer: () => { throw new Error('tracer bug'); },
+      tracerErrorPolicy: 'throw',
+    })).rejects.toThrow('tracer bug');
+  });
+
+  it('pin emits no tracer events', async () => {
+    const events = [];
+    const inner = atom(async () => 'ok', { inputs: ['x'], outputs: ['ok'] });
+    await flow('f', pin(inner, 'x')).run({}, {
+      logger: noLog,
+      tracer: (entry, event) => events.push({ event, kind: entry.kind }),
+    });
+    // Only the atom should emit, not the pin wrapper.
+    expect(events.map((e) => e.kind)).toEqual(['atom', 'atom']);
+  });
+});
+
+describe('cancellation', () => {
+  it('killSignal aborts the run with RailRuntimeError(KILLED)', async () => {
+    const ctrl = new AbortController();
+    ctrl.abort();
+    const wf = step(async () => {});
+    try {
+      await flow('f', wf).run({}, { logger: noLog, killSignal: ctrl.signal });
+      throw new Error('should have thrown');
+    } catch (e) {
+      expect(e).toBeInstanceOf(RailRuntimeError);
+      expect(e.code).toBe('KILLED');
+      expect(e.flowName).toBe('f');
+    }
+  });
+
+  it('runInfo.signal aborts when caller signal fires', async () => {
+    const ctrl = new AbortController();
+    let signalSeen;
+    const n = atom(async (_ctx, _local, runInfo) => {
+      signalSeen = runInfo.signal;
+      return 'ok';
+    }, { outputs: ['ok'] });
+    await flow('f', n).run({}, { logger: noLog, signal: ctrl.signal });
+    expect(signalSeen).toBeTruthy();
+    ctrl.abort();
+    expect(signalSeen.aborted).toBe(true);
+  });
+});
+
+describe('step budget', () => {
+  it('throws STEP_BUDGET_EXCEEDED when trace exceeds maxSteps', async () => {
+    const wf = activity((a) => {
+      a.entry('in');
+      a.addNode('loop', atom(async () => 'again', { inputs: ['in'], outputs: ['again', 'out'] }));
+      a.exit('done');
+      a.wire('.in', 'loop.in');
+      a.wire('loop.again', 'loop.in');
+      a.wire('loop.out', '.done');
+    });
+    try {
+      await flow('f', wf).run({}, { logger: noLog, maxSteps: 5 });
+      throw new Error('should have thrown');
+    } catch (e) {
+      expect(e).toBeInstanceOf(RailRuntimeError);
+      expect(e.code).toBe('STEP_BUDGET_EXCEEDED');
+    }
   });
 });

@@ -1,24 +1,20 @@
 /**
- * §9.7 — Top-level Step-Node held directly by a flow.
+ * §14.7 — Top-level atomic node held directly by a flow.
  *
- * A flow can hold any Rail-Node, not just an Activity. Useful for
- * isolated step logic, micro-workflows, and unit tests.
+ * `flow(name, node)` accepts any Rail-Node with exactly one input,
+ * so an atomic node can be used directly without wrapping it in
+ * an activity.
  */
 
-import { node, flow } from '../rail.js';
+import { atom, flow } from '../rail.js';
 
-const greet = node(async (ctx) => ({
-  output: 'done',
-  ctx: { ...ctx, msg: `Hi ${ctx.name}` },
-}), { outputs: ['done'] });
+const greet = atom(async (ctx) => {
+  const msg = `hi ${ctx.name}`;
+  for (const k of Object.keys(ctx)) delete ctx[k];
+  ctx.msg = msg;
+  return 'out';
+}, { outputs: ['out'] });
 
-greet.check();
-
-const r = await flow('greet', greet).run({ name: 'Markus' });
-console.log('terminus:', r.terminus);
-console.log('msg:', r.ctx.msg);
-
-// flow.toMermaid() also works for a top-level Step-Node — minimal
-// diagram with one synthetic entry and one synthetic exit per output.
-console.log('\n--- Mermaid ---');
-console.log(flow('greet', greet).toMermaid());
+const r = await flow('greet', greet).run({ name: 'Mat' });
+console.log('exit:', r.exit);
+console.log('ctx :', r.ctx);

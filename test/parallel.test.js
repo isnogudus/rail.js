@@ -1,156 +1,205 @@
-import { describe, it, expect } from 'vitest';
+/**
+ * parallel — spec §8. Acceptance §16.8.
+ */
+
+import { describe, expect, it } from 'vitest';
 import {
-  activity,
-  node,
-  parallel,
-  flow,
-  isParallelCtx,
-  RailCheckError,
-  RailRuntimeError,
+  activity, parallel, step, atom, pin, flow,
+  RailAggregateError, RailBuildError, RailError, RailRuntimeError,
 } from '../rail.js';
 
-const silent = { logger: () => {} };
+const noLog = () => {};
 
-describe('parallel(branches) (§3.7)', () => {
-  it('runs all branches and produces parallel-results ctx', async () => {
-    const ba = activity((a) => {
-      const s = a.entry('in');
-      const ok = a.exit('ok');
-      const f = a.addNode('f', node((c) => ({ output: 'ok', ctx: { ...c, a: 'A' } }),
-        { outputs: ['ok'] }));
-      a.wire(s, f);
-      a.wire(f.out('ok'), ok);
-    });
-    const bb = activity((a) => {
-      const s = a.entry('in');
-      const ok = a.exit('ok');
-      const f = a.addNode('f', node((c) => ({ output: 'ok', ctx: { ...c, b: 'B' } }),
-        { outputs: ['ok'] }));
-      a.wire(s, f);
-      a.wire(f.out('ok'), ok);
-    });
-
-    const par = parallel({ a: ba, b: bb });
-
-    const wf = activity((a) => {
-      const start = a.entry('in');
-      const ok = a.exit('ok');
-      const fan = a.addNode('fan', par);
-      const eval_ = a.addNode('eval', node((c) => {
-        return { output: 'ok', ctx: c };
-      }, { outputs: ['ok'] }));
-      a.wire(start, fan);
-      a.wire(fan.out('done'), eval_);
-      a.wire(eval_.out('ok'), ok);
-    });
-    wf.check();
-
-    const r = await flow('wf', wf).run({ seed: 1 }, silent);
-    expect(r.terminus).toBe('ok');
-    expect(isParallelCtx(r.ctx)).toBe(true);
-    expect(r.ctx.inputCtx).toEqual({ seed: 1 });
-    expect(r.ctx.results.a.terminus).toBe('ok');
-    expect(r.ctx.results.a.ctx).toEqual({ seed: 1, a: 'A' });
-    expect(r.ctx.results.b.terminus).toBe('ok');
-    expect(r.ctx.results.b.ctx).toEqual({ seed: 1, b: 'B' });
+describe('parallel build validation', () => {
+  it('produces __rail_kind__: parallel, inputs:[in], outputs:[out] (no merge)', () => {
+    const p = parallel({ a: step(async () => {}), b: step(async () => {}) });
+    expect(p.__rail_kind__).toBe('parallel');
+    expect(p.inputs).toEqual(['in']);
+    expect(p.outputs).toEqual(['out']);
   });
 
-  it('first error in branch declaration order is re-thrown', async () => {
-    const fast = node(async () => {
-      throw new Error('fast');
-    }, { outputs: ['ok'] });
-    const slow = node(async () => {
-      await new Promise((r) => setTimeout(r, 5));
-      throw new Error('slow');
-    }, { outputs: ['ok'] });
+  it('rejects non-object branches with TypeError', () => {
+    expect(() => parallel('bad')).toThrow(TypeError);
+    expect(() => parallel(null)).toThrow(TypeError);
+    expect(() => parallel([step(async () => {})])).toThrow(TypeError);
+  });
 
-    const par = parallel({ first: fast, second: slow });
-    const wf = activity((a) => {
-      const start = a.entry('in');
-      const ok = a.exit('ok');
-      const fan = a.addNode('fan', par);
-      a.wire(start, fan);
-      a.wire(fan.out('done'), ok);
-    });
-    wf.check();
-
+  it('rejects empty branches with MISSING_NODES', () => {
     try {
-      await flow('wf', wf).run({}, silent);
-      throw new Error('expected throw');
+      parallel({});
+      throw new Error('should have thrown');
     } catch (e) {
-      expect(e).toBeInstanceOf(RailRuntimeError);
-      // Both branches throw; `first` is declared first and is the one re-thrown.
-      expect(e.cause?.message).toBe('fast');
+      expect(e).toBeInstanceOf(RailBuildError);
+      expect(e.code).toBe('MISSING_NODES');
     }
   });
 
-  it('branch-level structural error surfaces at outer compile time (acceptance #3)', () => {
-    const broken = activity((a) => {
+  it('rejects non-rail-node branch with NOT_A_NODE', () => {
+    try {
+      parallel({ a: { x: 1 } });
+      throw new Error('should have thrown');
+    } catch (e) {
+      expect(e.code).toBe('NOT_A_NODE');
+    }
+  });
+
+  it('rejects multi-input branch with MULTI_INPUT_NODE', () => {
+    const multi = atom(async () => 'ok', { inputs: ['a', 'b'], outputs: ['ok'] });
+    try {
+      parallel({ x: multi });
+      throw new Error('should have thrown');
+    } catch (e) {
+      expect(e.code).toBe('MULTI_INPUT_NODE');
+    }
+  });
+
+  it('rejects __merge__ as a branch name (INVALID_NAME)', () => {
+    try {
+      parallel({ __merge__: step(async () => {}) });
+      throw new Error('should have thrown');
+    } catch (e) {
+      expect(e.code).toBe('INVALID_NAME');
+    }
+  });
+
+  it('exposes merge node outputs as parallel outputs', () => {
+    const merge = atom(async () => 'ok', { outputs: ['ok', 'err'] });
+    const p = parallel({ a: step(async () => {}) }, merge);
+    expect(p.outputs).toEqual(['ok', 'err']);
+  });
+
+  it('rejects multi-input merge with MULTI_INPUT_NODE', () => {
+    const merge = atom(async () => 'ok', { inputs: ['a', 'b'], outputs: ['ok'] });
+    try {
+      parallel({ a: step(async () => {}) }, merge);
+      throw new Error('should have thrown');
+    } catch (e) {
+      expect(e.code).toBe('MULTI_INPUT_NODE');
+    }
+  });
+});
+
+describe('parallel runtime', () => {
+  it('runs branches concurrently and aggregates branch ctxes', async () => {
+    const p = parallel({
+      profile: step(async (ctx) => { ctx.profile = 'p:' + ctx.userId; }),
+      orders:  step(async (ctx) => { ctx.orders = 'o:' + ctx.userId; }),
+    });
+    const r = await flow('f', p).run({ userId: 'u-1' }, { logger: noLog });
+    expect(r.exit).toBe('out');
+    expect(r.ctx.profile).toEqual({ userId: 'u-1', profile: 'p:u-1' });
+    expect(r.ctx.orders).toEqual({ userId: 'u-1', orders: 'o:u-1' });
+  });
+
+  it('throws RailAggregateError when any branch fails', async () => {
+    const p = parallel({
+      ok: step(async () => {}),
+      bad: atom(async () => { throw new Error('boom'); }, { outputs: ['ok'] }),
+    });
+    try {
+      await flow('f', p).run({}, { logger: noLog });
+      throw new Error('should have thrown');
+    } catch (e) {
+      expect(e).toBeInstanceOf(RailAggregateError);
+      expect(e).toBeInstanceOf(RailError);
+      expect(e.code).toBe('PARALLEL_BRANCH_FAILED');
+      expect(e.flowName).toBe('f');
+      expect(Object.keys(e.branchErrors)).toEqual(['bad']);
+      expect(e.branchErrors.bad).toBeInstanceOf(RailRuntimeError);
+      expect(e.branchErrors.bad.code).toBe('UNHANDLED_THROW');
+      expect(Array.isArray(e.errors)).toBe(true);
+      expect(e.errors.length).toBe(1);
+    }
+  });
+
+  it('aggregates multiple branch failures in declaration order', async () => {
+    const p = parallel({
+      a: atom(async () => { throw new Error('a-err'); }, { outputs: ['ok'] }),
+      b: step(async () => {}),
+      c: atom(async () => { throw new Error('c-err'); }, { outputs: ['ok'] }),
+    });
+    try {
+      await flow('f', p).run({}, { logger: noLog });
+      throw new Error('should have thrown');
+    } catch (e) {
+      expect(Object.keys(e.branchErrors)).toEqual(['a', 'c']);
+    }
+  });
+
+  it('runs a merge node when all branches succeed', async () => {
+    const merge = atom(async (ctx) => {
+      const sum = ctx.a.v + ctx.b.v;
+      for (const k of Object.keys(ctx)) delete ctx[k];
+      ctx.sum = sum;
+      return 'ok';
+    }, { outputs: ['ok'] });
+    const p = parallel({
+      a: step(async (ctx) => { ctx.v = 10; }),
+      b: step(async (ctx) => { ctx.v = 20; }),
+    }, merge);
+    const r = await flow('f', p).run({}, { logger: noLog });
+    expect(r.exit).toBe('ok');
+    expect(r.ctx).toEqual({ sum: 30 });
+  });
+
+  it('skips merge node when any branch fails', async () => {
+    let mergeCalled = false;
+    const merge = atom(async () => { mergeCalled = true; return 'ok'; }, { outputs: ['ok'] });
+    const p = parallel({
+      a: atom(async () => { throw new Error('boom'); }, { outputs: ['ok'] }),
+      b: step(async () => {}),
+    }, merge);
+    try { await flow('f', p).run({}, { logger: noLog }); } catch {}
+    expect(mergeCalled).toBe(false);
+  });
+
+  it('per-branch shallow copy isolates top-level mutations', async () => {
+    const p = parallel({
+      a: step(async (ctx) => { ctx.shared = 'a-touched'; }),
+      b: step(async (ctx) => { ctx.shared = 'b-touched'; }),
+    });
+    const r = await flow('f', p).run({ shared: 'initial' }, { logger: noLog });
+    expect(r.ctx.a.shared).toBe('a-touched');
+    expect(r.ctx.b.shared).toBe('b-touched');
+  });
+
+  it('aborts sibling branches via combined signal on first failure', async () => {
+    let bSawAborted = false;
+    const slowB = atom(async (ctx, _local, runInfo) => {
+      await new Promise((resolve) => {
+        const t = setTimeout(resolve, 50);
+        runInfo.signal.addEventListener('abort', () => { clearTimeout(t); resolve(); });
+      });
+      bSawAborted = runInfo.signal.aborted;
+      return 'ok';
+    }, { outputs: ['ok'] });
+
+    const p = parallel({
+      a: atom(async () => { throw new Error('a-fail'); }, { outputs: ['ok'] }),
+      b: slowB,
+    });
+    try { await flow('f', p).run({}, { logger: noLog }); } catch {}
+    expect(bSawAborted).toBe(true);
+  });
+});
+
+describe('parallel inside an activity', () => {
+  it('integrates with activity wires', async () => {
+    const fan = parallel({
+      x: step(async (ctx) => { ctx.x = 1; }),
+      y: step(async (ctx) => { ctx.y = 2; }),
+    });
+    const wf = activity((a) => {
       a.entry('in');
-      a.exit('ok'); // exit not wired
+      a.addNode('fan', fan);
+      a.exit('done');
+      a.wire('.in', 'fan.in');
+      a.wire('fan.out', '.done');
     });
-    const par = parallel({ b: broken });
-    const wf = activity((a) => {
-      const start = a.entry('in');
-      const ok = a.exit('ok');
-      const fan = a.addNode('fan', par);
-      a.wire(start, fan);
-      a.wire(fan.out('done'), ok);
-    });
-    expect(() => wf.check()).toThrow(RailCheckError);
-  });
-
-  it('compound branch trace entries use parallelName.branchKey form (acceptance #34)', async () => {
-    const ba = activity((a) => {
-      const s = a.entry('in');
-      const ok = a.exit('ok');
-      const v = a.addNode('validate', node(() => 'ok', { outputs: ['ok'] }));
-      a.wire(s, v);
-      a.wire(v.out('ok'), ok);
-    });
-    const par = parallel({ branchA: ba });
-    const wf = activity((a) => {
-      const start = a.entry('in');
-      const ok = a.exit('ok');
-      const fan = a.addNode('fan', par);
-      const merge = a.addNode('merge', node(() => 'ok', { outputs: ['ok'] }));
-      a.wire(start, fan);
-      a.wire(fan.out('done'), merge);
-      a.wire(merge.out('ok'), ok);
-    });
-    wf.check();
-
-    const r = await flow('wf', wf).run({}, silent);
-    const stepNames = r.trace.map((e) => e.step);
-    expect(stepNames).toContain('fan.branchA.validate');
-    expect(stepNames).toContain('fan.branchA');
-    expect(stepNames).toContain('fan');
-  });
-
-  it('inner steps inside a parallel Activity branch carry depth=1 (acceptance #25)', async () => {
-    const inner = activity((a) => {
-      const s = a.entry('in');
-      const ok = a.exit('ok');
-      const x = a.addNode('x', node(() => 'ok', { outputs: ['ok'] }));
-      a.wire(s, x);
-      a.wire(x.out('ok'), ok);
-    });
-    const par = parallel({ b: inner });
-    const wf = activity((a) => {
-      const start = a.entry('in');
-      const ok = a.exit('ok');
-      const fan = a.addNode('fan', par);
-      a.wire(start, fan);
-      a.wire(fan.out('done'), ok);
-    });
-    wf.check();
-
-    const r = await flow('wf', wf).run({}, silent);
-    const xEntry = r.trace.find((e) => e.step === 'fan.b.x');
-    const fanBEntry = r.trace.find((e) => e.step === 'fan.b');
-    const fanEntry = r.trace.find((e) => e.step === 'fan');
-    expect(xEntry?.depth).toBe(1);
-    expect(fanBEntry?.depth).toBe(0);
-    expect(fanEntry?.depth).toBe(0);
+    const r = await flow('f', wf).run({}, { logger: noLog });
+    expect(r.exit).toBe('done');
+    // Branches produce shallow-copied ctxes aggregated under their names.
+    expect(r.ctx.x).toEqual({ x: 1 });
+    expect(r.ctx.y).toEqual({ y: 2 });
   });
 });

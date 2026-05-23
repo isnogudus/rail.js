@@ -1,600 +1,436 @@
 /**
- * `activity(builderFn)` — Activity factory + builder + check + invoke.
+ * `activity(builderFn)` — graph-based group node builder. See spec §5.
  *
- * See spec §2 (Activity), §3.1, §3.3, §3.4, §3.5, §6.2, §7, §8.
- *
- * Activities are composed of named sub-nodes and wires connecting
- * named ports. The builder enforces structural rules eagerly
- * (RailBuildError raised at the call site). `check()` runs the
- * post-builder validation in two phases — completeness and
- * topology — and recursively checks sub-nodes. At runtime, the
- * activity's invoke walks the wire graph until an exit endpoint
- * is reached. Cycles are valid topology; the `NO_EXIT_PATH` check
- * catches structurally trapped regions.
- *
- * Implementation: each Activity is `Object.create(ACTIVITY_PROTO)`
- * with per-instance state. The methods on ACTIVITY_PROTO dispatch
- * to module-level helpers via `this`.
+ * Each Activity is a plain object exposing the Node interface
+ * (§2) plus a `toMermaid` hook (§2.4, §15.8). The builder
+ * collects entries, exits, sub-nodes, and wires; eagerly validates
+ * each operation; then, after the closure returns, runs the
+ * whole-graph walk (§5.6) before returning the assembled node.
  */
 
 import {
   RailBuildError,
-  RailCheckError,
   RailRuntimeError,
   validateName,
 } from './errors.js';
-import { isRailNode } from './ctx.js';
-import {
-  emitTracer,
-  now,
-  round2,
-  runStep,
-  joinPath,
-} from './runtime.js';
-import { renderActivityToMermaid } from './mermaid.js';
+import { invokeNode } from './runtime.js';
+import { isRailNode } from './util.js';
+import { renderActivityMermaid } from './mermaid.js';
 
-/* ------------------------------------------------------------------ */
-/* Internal wire-key encoding                                         */
-/* ------------------------------------------------------------------ */
-
-const ENTRY_KEY = '__entry__';
-
-/** @param {string} nodeName @param {string} port */
-function portKey(nodeName, port) {
-  return `node:${nodeName}.${port}`;
-}
-
-/* ------------------------------------------------------------------ */
-/* Endpoint handles                                                   */
-/* ------------------------------------------------------------------ */
-
-function makeEntryHandle(builderRef, name) {
-  return Object.freeze({ _kind: 'entry', _builder: builderRef, _name: name });
-}
-
-function makeExitHandle(builderRef, name) {
-  return Object.freeze({ _kind: 'exit', _builder: builderRef, _name: name });
-}
-
-function makeNodeHandle(builderRef, name, nodeRef) {
-  const handle = {
-    _kind: 'node',
-    _builder: builderRef,
-    _name: name,
-    _node: nodeRef,
-    out(port) {
-      if (typeof port !== 'string' || !nodeRef.outputs.includes(port)) {
-        throw new RailBuildError(
-          'UNKNOWN_PORT',
-          `Node "${name}" has no output "${port}"; declared outputs: [${nodeRef.outputs.join(', ')}]`,
-          { node: name, port, side: 'output' }
-        );
-      }
-      return Object.freeze({
-        _kind: 'node-output',
-        _builder: builderRef,
-        _nodeName: name,
-        _node: nodeRef,
-        _port: port,
-      });
-    },
-    in(port) {
-      if (typeof port !== 'string' || !nodeRef.inputs.includes(port)) {
-        throw new RailBuildError(
-          'UNKNOWN_PORT',
-          `Node "${name}" has no input "${port}"; declared inputs: [${nodeRef.inputs.join(', ')}]`,
-          { node: name, port, side: 'input' }
-        );
-      }
-      return Object.freeze({
-        _kind: 'node-input',
-        _builder: builderRef,
-        _nodeName: name,
-        _node: nodeRef,
-        _port: port,
-      });
-    },
-  };
-  return Object.freeze(handle);
-}
-
-/* ------------------------------------------------------------------ */
-/* Check phases                                                       */
-/* ------------------------------------------------------------------ */
+const ENTRY_NODE = '';
 
 /**
- * Recursively check sub-nodes. Returns inherited errors with path
- * prefix; the outer check raises them as completeness errors.
+ * Parses a wire reference `'name.port'` or `'.port'`.
+ * Returns `{ nodeName, portName }`. Throws RailBuildError(UNRESOLVED_WIRE_REFERENCE)
+ * on malformed input.
+ *
+ * @param {unknown} ref
+ * @param {string} where
+ * @param {string} role  'source' | 'target' for error message
  */
-function checkSubNodes(state) {
-  const inherited = [];
-  for (const sn of state.subNodes) {
-    try {
-      if (!sn.node.isChecked()) sn.node.check();
-    } catch (e) {
-      if (e instanceof RailCheckError) {
-        for (const inner of e.errors) {
-          const path = inner.path ? `${sn.name}.${inner.path}` : sn.name;
-          inherited.push({ ...inner, path });
-        }
-      } else {
-        throw e;
-      }
-    }
-  }
-  return inherited;
-}
-
-/** Phase 1 — completeness (§7.3). */
-function collectCompleteness(state) {
-  const issues = [];
-
-  if (state.entries.length === 0) {
-    issues.push({ code: 'NO_ENTRY' });
-  }
-  if (state.exits.length === 0) {
-    issues.push({ code: 'NO_EXITS' });
-  }
-
-  if (state.entries.length > 0) {
-    const entryWires = state.wires.filter((w) => w.sourceKey === ENTRY_KEY);
-    if (entryWires.length === 0) {
-      issues.push({ code: 'ENTRY_NOT_WIRED' });
-    }
-  }
-
-  for (const sn of state.subNodes) {
-    for (const out of sn.node.outputs) {
-      const k = portKey(sn.name, out);
-      const has = state.wiredOutputs.has(k);
-      if (!has) {
-        issues.push({ code: 'UNWIRED_OUTPUT', node: sn.name, output: out });
-      }
-    }
-  }
-
-  for (const e of state.exits) {
-    const matches = state.wires.filter(
-      (w) => w.targetDesc.kind === 'exit' && w.targetDesc.name === e.name
-    );
-    if (matches.length === 0) {
-      issues.push({ code: 'EXIT_NOT_WIRED', exit: e.name });
-    }
-  }
-
-  return issues;
-}
-
-/** Builds runtime lookup tables. */
-function buildAdjacency(state) {
-  const entryWires = state.wires.filter((w) => w.sourceKey === ENTRY_KEY);
-  const wireFromEntry = entryWires.length > 0 ? entryWires[0].targetDesc : null;
-
-  const wireFromOutput = new Map();
-  for (const w of state.wires) {
-    if (w.sourceKey !== ENTRY_KEY) {
-      wireFromOutput.set(w.sourceKey, w.targetDesc);
-    }
-  }
-
-  const subNodeMap = new Map();
-  for (const sn of state.subNodes) subNodeMap.set(sn.name, sn.node);
-
-  return { wireFromEntry, wireFromOutput, subNodeMap };
-}
-
-/** Phase 2 — topology (§7.4). Forward + reverse BFS; cycles are allowed. */
-function collectTopology(state, adjacency) {
-  const { wireFromEntry, wireFromOutput, subNodeMap } = adjacency;
-  const issues = [];
-
-  // Forward BFS from entry's wire target.
-  const reachableNodes = new Set();
-  const reachableExits = new Set();
-  const queue = [];
-  if (wireFromEntry) {
-    if (wireFromEntry.kind === 'exit') {
-      reachableExits.add(wireFromEntry.name);
-    } else {
-      reachableNodes.add(wireFromEntry.name);
-      queue.push(wireFromEntry.name);
-    }
-  }
-  while (queue.length > 0) {
-    const n = queue.shift();
-    const sub = subNodeMap.get(n);
-    if (!sub) continue;
-    for (const out of sub.outputs) {
-      const next = wireFromOutput.get(portKey(n, out));
-      if (!next) continue;
-      if (next.kind === 'exit') {
-        reachableExits.add(next.name);
-      } else if (!reachableNodes.has(next.name)) {
-        reachableNodes.add(next.name);
-        queue.push(next.name);
-      }
-    }
-  }
-
-  for (const sn of state.subNodes) {
-    if (!reachableNodes.has(sn.name)) {
-      issues.push({ code: 'UNREACHABLE_NODE', node: sn.name });
-    }
-  }
-  for (const e of state.exits) {
-    if (!reachableExits.has(e.name)) {
-      issues.push({ code: 'UNREACHABLE_EXIT', exit: e.name });
-    }
-  }
-
-  // Reverse BFS from exits: every forward-reachable node must reach
-  // at least one exit. Otherwise NO_EXIT_PATH.
-  const reverseAdj = new Map();
-  for (const sn of state.subNodes) reverseAdj.set(sn.name, []);
-  for (const [srcKey, targetDesc] of wireFromOutput) {
-    const m = srcKey.match(/^node:(.+?)\.(.+)$/);
-    if (!m) continue;
-    const srcNode = m[1];
-    if (targetDesc.kind === 'node') {
-      const list = reverseAdj.get(targetDesc.name);
-      if (list) list.push(srcNode);
-    }
-  }
-
-  const exitReachable = new Set();
-  const rq = [];
-  for (const e of state.exits) {
-    for (const [srcKey, td] of wireFromOutput) {
-      if (td.kind === 'exit' && td.name === e.name) {
-        const m = srcKey.match(/^node:(.+?)\.(.+)$/);
-        if (m) {
-          const src = m[1];
-          if (!exitReachable.has(src)) {
-            exitReachable.add(src);
-            rq.push(src);
-          }
-        }
-      }
-    }
-  }
-  while (rq.length > 0) {
-    const n = rq.shift();
-    const preds = reverseAdj.get(n) ?? [];
-    for (const p of preds) {
-      if (!exitReachable.has(p)) {
-        exitReachable.add(p);
-        rq.push(p);
-      }
-    }
-  }
-
-  for (const n of reachableNodes) {
-    if (!exitReachable.has(n)) {
-      issues.push({ code: 'NO_EXIT_PATH', node: n });
-    }
-  }
-
-  return issues;
-}
-
-/* ------------------------------------------------------------------ */
-/* Module-level operations on an Activity                             */
-/* ------------------------------------------------------------------ */
-
-function checkActivity(node) {
-  if (node._checked) return;
-  const state = node._state;
-
-  const inherited = checkSubNodes(state);
-
-  const completeness = [...inherited, ...collectCompleteness(state)];
-  if (completeness.length > 0) {
-    throw new RailCheckError('completeness', completeness);
-  }
-
-  const adjacency = buildAdjacency(state);
-  const topology = collectTopology(state, adjacency);
-  if (topology.length > 0) {
-    throw new RailCheckError('topology', topology);
-  }
-
-  node._wireFromEntry = adjacency.wireFromEntry;
-  node._wireFromOutput = adjacency.wireFromOutput;
-  node._subNodeMap = adjacency.subNodeMap;
-  node._checked = true;
-}
-
-async function invokeActivity(node, name, ctx, runState, _local) {
-  if (!node._checked) {
-    throw new RailRuntimeError(
-      'INTERNAL',
-      `Activity "${name}" invoked before check()`,
-      {
-        flow: runState.shared.flowName,
-        trace: runState.shared.trace,
-        ctx,
-      }
-    );
-  }
-
-  // The activity loop runs at runState.depth (which is the inner depth
-  // for sub-activities, or 0 for top-level). outerDepth is the depth
-  // the runner returns to after activity-leave/throw — that is, the
-  // depth of the calling scope: runState.parentDepth when set (by
-  // runStep on fork), or runState.depth (top-level, no fork).
-  const innerDepth = runState.depth;
-  const outerDepth = runState.parentDepth ?? runState.depth;
-  const shared = runState.shared;
-  const invocation = runState.invocation ?? 1;
-
-  const t0 = now();
-  emitTracer(shared, {
-    type: 'activity-enter',
-    ts: round2(t0 - shared.runStartTime),
-    depth: innerDepth,
-    name,
-    invocation,
-    local: _local ?? {},
-  });
-
-  let currentCtx = ctx;
-  let currentTarget = node._wireFromEntry;
-  // The activity invoke's own loop runs at runState.path (set by the
-  // outer runStep when forking; '' for top-level). Inner sub-step
-  // names are joined via joinPath.
-
-  try {
-    if (currentTarget.kind === 'node') {
-      runState.currentInput = currentTarget.port;
-    }
-
-    while (true) {
-      if (currentTarget.kind === 'exit') {
-        const t1 = now();
-        emitTracer(shared, {
-          type: 'activity-leave',
-          ts: round2(t1 - shared.runStartTime),
-          depth: outerDepth,
-          name,
-          output: currentTarget.name,
-          invocation,
-          local: _local ?? {},
-        });
-        return { output: currentTarget.name, ctx: currentCtx };
-      }
-
-      const subName = currentTarget.name;
-      const subPort = currentTarget.port;
-      const subNode = node._subNodeMap.get(subName);
-      runState.currentInput = subPort;
-
-      const result = await runStep(subNode, subName, currentCtx, runState);
-
-      if (Object.prototype.hasOwnProperty.call(result, 'ctx')) {
-        currentCtx = result.ctx;
-      }
-
-      const next = node._wireFromOutput.get(portKey(subName, result.output));
-      if (!next) {
-        throw new RailRuntimeError(
-          'INTERNAL',
-          `No outgoing wire from ${subName}.${result.output}`,
-          {
-            flow: shared.flowName,
-            trace: shared.trace,
-            ctx: currentCtx,
-          }
-        );
-      }
-      currentTarget = next;
-    }
-  } catch (e) {
-    const t1 = now();
-    emitTracer(shared, {
-      type: 'activity-throw',
-      ts: round2(t1 - shared.runStartTime),
-      depth: outerDepth,
-      name,
-      error: e,
-      duration: round2(t1 - t0),
-      invocation,
-      local: _local ?? {},
+function parseRef(ref, where, role) {
+  if (typeof ref !== 'string') {
+    throw new RailBuildError('UNRESOLVED_WIRE_REFERENCE', {
+      message: `${where}: ${role} must be a string, got ${typeof ref}`,
+      details: { where, role, ref },
     });
-    throw e;
   }
+  const dot = ref.indexOf('.');
+  if (dot < 0) {
+    throw new RailBuildError('UNRESOLVED_WIRE_REFERENCE', {
+      message: `${where}: ${role} "${ref}" is missing the required dot separator`,
+      details: { where, role, ref },
+    });
+  }
+  const nodeName = ref.slice(0, dot);
+  const portName = ref.slice(dot + 1);
+  if (portName.length === 0 || portName.includes('.')) {
+    throw new RailBuildError('UNRESOLVED_WIRE_REFERENCE', {
+      message: `${where}: ${role} "${ref}" has an invalid port component`,
+      details: { where, role, ref },
+    });
+  }
+  return { nodeName, portName, raw: ref };
 }
 
-/* ------------------------------------------------------------------ */
-/* Shared prototype                                                   */
-/* ------------------------------------------------------------------ */
-
-const ACTIVITY_PROTO = {
-  railKind: 'activity',
-  check()     { return checkActivity(this); },
-  isChecked() { return this._checked; },
-  invoke(name, ctx, runState, local) {
-    return invokeActivity(this, name, ctx, runState, local);
-  },
-  toMermaid(name, opts) { return renderActivityToMermaid(this, name, opts); },
-};
-
-/* ------------------------------------------------------------------ */
-/* Builder + factory                                                  */
-/* ------------------------------------------------------------------ */
+function endpointKey(nodeName, portName) {
+  return `${nodeName}.${portName}`;
+}
 
 /**
  * @param {(a: object) => void} builderFn
- * @returns {object} An unchecked Activity (Rail-Node).
+ * @returns {object} fully-validated Activity Rail-Node
  */
 export function activity(builderFn) {
   if (typeof builderFn !== 'function') {
     throw new TypeError('activity(builderFn): builderFn must be a function');
   }
 
-  const builderRef = Object.freeze({ __rail: 'activity-builder' });
+  const entries = []; // ordered list of entry names
+  const entrySet = new Set();
+  const exits = [];
+  const exitSet = new Set();
+  const subNodes = new Map(); // localName → node
+  /** @type {Array<{ source: {nodeName,portName,raw}, target: {nodeName,portName,raw} }>} */
+  const wires = [];
+  const wiredSources = new Set(); // endpointKey of sources that already have a wire
+  let sealed = false;
 
-  const state = {
-    builderRef,
-    entries: /** @type {{name: string}[]} */ ([]),
-    exits:   /** @type {{name: string}[]} */ ([]),
-    subNodes:/** @type {{name: string, node: any}[]} */ ([]),
-    wires:   /** @type {Array<{sourceKey: string, targetDesc: object}>} */ ([]),
-    wiredOutputs: /** @type {Set<string>} */ (new Set()),
-    entryWired: false,
-    nodeNames: /** @type {Set<string>} */ (new Set()),
-    exitNames: /** @type {Set<string>} */ (new Set()),
-  };
-
-  const builder = {
-    entry(name) {
-      validateName(name, 'a.entry(name)');
-      if (state.entries.length > 0) {
-        throw new RailBuildError(
-          'MULTIPLE_ENTRIES',
-          `a.entry(): activity already has an entry "${state.entries[0].name}"; declaring a second entry "${name}" is not allowed`,
-          { existing: state.entries[0].name, attempted: name }
-        );
-      }
-      state.entries.push({ name });
-      return makeEntryHandle(builderRef, name);
-    },
-
-    exit(name) {
-      validateName(name, 'a.exit(name)');
-      if (state.exitNames.has(name)) {
-        throw new RailBuildError(
-          'DUPLICATE_EXIT',
-          `a.exit(): exit "${name}" was already declared`,
-          { name }
-        );
-      }
-      state.exitNames.add(name);
-      state.exits.push({ name });
-      return makeExitHandle(builderRef, name);
-    },
-
-    standardExits() {
-      const success = builder.exit('success');
-      const failure = builder.exit('failure');
-      return { success, failure };
-    },
-
-    addNode(name, subNode) {
-      validateName(name, 'a.addNode(name, node)');
-      if (!isRailNode(subNode)) {
-        throw new RailBuildError(
-          'NOT_A_NODE',
-          `a.addNode(): value passed for "${name}" is not a Rail-Node`,
-          { name }
-        );
-      }
-      if (state.nodeNames.has(name)) {
-        throw new RailBuildError(
-          'DUPLICATE_NODE',
-          `a.addNode(): a node named "${name}" was already added`,
-          { name }
-        );
-      }
-      state.nodeNames.add(name);
-      state.subNodes.push({ name, node: subNode });
-      return makeNodeHandle(builderRef, name, subNode);
-    },
-
-    wire(source, target) {
-      if (source?._builder !== builderRef || target?._builder !== builderRef) {
-        throw new RailBuildError(
-          'WIRE_FROM_OTHER_BUILDER',
-          'a.wire(): handle was returned by a different activity builder'
-        );
-      }
-      if (source._kind !== 'entry' && source._kind !== 'node-output') {
-        throw new RailBuildError(
-          'INVALID_WIRE_DIRECTION',
-          `a.wire(): source must be an entry or node-output handle, got ${source._kind}`
-        );
-      }
-      if (
-        target._kind !== 'exit' &&
-        target._kind !== 'node' &&
-        target._kind !== 'node-input'
-      ) {
-        throw new RailBuildError(
-          'INVALID_WIRE_DIRECTION',
-          `a.wire(): target must be an exit, node, or node-input handle, got ${target._kind}`
-        );
-      }
-      if (target._kind === 'node' && target._node.inputs.length > 1) {
-        throw new RailBuildError(
-          'AMBIGUOUS_NODE_INPUT',
-          `a.wire(): target node "${target._name}" has ${target._node.inputs.length} inputs (${target._node.inputs.join(', ')}); use .in('port') to disambiguate`,
-          { node: target._name }
-        );
-      }
-
-      if (source._kind === 'entry') {
-        if (state.entries.length === 0) {
-          throw new RailBuildError(
-            'NO_ENTRY',
-            'a.wire(): no entry has been declared yet'
-          );
-        }
-        if (state.entryWired) {
-          throw new RailBuildError(
-            'MULTIPLE_ENTRY_WIRES',
-            'a.wire(): the activity entry already has an outgoing wire'
-          );
-        }
-        state.entryWired = true;
-      } else {
-        const k = portKey(source._nodeName, source._port);
-        if (state.wiredOutputs.has(k)) {
-          throw new RailBuildError(
-            'MULTIPLE_OUTGOING_WIRES',
-            `a.wire(): output "${source._nodeName}.${source._port}" already has a wire`,
-            { node: source._nodeName, output: source._port }
-          );
-        }
-        state.wiredOutputs.add(k);
-      }
-
-      const sourceKey =
-        source._kind === 'entry'
-          ? ENTRY_KEY
-          : portKey(source._nodeName, source._port);
-
-      let targetDesc;
-      if (target._kind === 'exit') {
-        targetDesc = { kind: 'exit', name: target._name };
-      } else if (target._kind === 'node') {
-        targetDesc = { kind: 'node', name: target._name, port: target._node.inputs[0] };
-      } else {
-        targetDesc = { kind: 'node', name: target._nodeName, port: target._port };
-      }
-
-      state.wires.push({ sourceKey, targetDesc });
-    },
-  };
-
-  builderFn(builder);
-
-  // Compute Node-interface inputs/outputs from declared entries/exits.
-  const seenExits = new Set();
-  const outputs = [];
-  for (const e of state.exits) {
-    if (!seenExits.has(e.name)) {
-      seenExits.add(e.name);
-      outputs.push(e.name);
+  function ensureNotSealed(where) {
+    if (sealed) {
+      throw new RailBuildError('SEALED', {
+        message: `${where}: builder has been sealed; cannot mutate after activity(...) returned`,
+        details: { where },
+      });
     }
   }
-  const inputs = state.entries.length > 0 ? [state.entries[0].name] : ['in'];
 
-  const activityNode = Object.create(ACTIVITY_PROTO);
-  activityNode.inputs          = inputs;
-  activityNode.outputs         = outputs;
-  activityNode._state          = state;
-  activityNode._checked        = false;
-  activityNode._wireFromEntry  = null;
-  activityNode._wireFromOutput = null;
-  activityNode._subNodeMap     = null;
-  return activityNode;
+  function addEntry(name) {
+    validateName(name, 'a.entry(name)');
+    if (entrySet.has(name)) {
+      throw new RailBuildError('DUPLICATE_INPUT', {
+        message: `a.entry: duplicate entry name "${name}"`,
+        details: { name },
+      });
+    }
+    entrySet.add(name);
+    entries.push(name);
+  }
+
+  function addExit(name) {
+    validateName(name, 'a.exit(name)');
+    if (exitSet.has(name)) {
+      throw new RailBuildError('DUPLICATE_OUTPUT', {
+        message: `a.exit: duplicate exit name "${name}"`,
+        details: { name },
+      });
+    }
+    exitSet.add(name);
+    exits.push(name);
+  }
+
+  function addNode(name, node) {
+    validateName(name, 'a.addNode(name, node)');
+    if (subNodes.has(name)) {
+      throw new RailBuildError('DUPLICATE_NODE_NAME', {
+        message: `a.addNode: duplicate sub-node name "${name}"`,
+        details: { name },
+      });
+    }
+    if (!isRailNode(node)) {
+      throw new RailBuildError('NOT_A_NODE', {
+        message: `a.addNode: value for "${name}" is not a Rail-Node`,
+        details: { name },
+      });
+    }
+    subNodes.set(name, node);
+  }
+
+  function resolveSource(ref) {
+    if (ref.nodeName === ENTRY_NODE) {
+      if (!entrySet.has(ref.portName)) {
+        // Either: not declared at all, or declared as an exit only.
+        if (exitSet.has(ref.portName)) {
+          throw new RailBuildError('WIRE_DIRECTION_INVALID', {
+            message: `a.wire: source ".${ref.portName}" refers to an exit; only entries can be used as sources`,
+            details: { ref: ref.raw, side: 'source' },
+          });
+        }
+        throw new RailBuildError('UNRESOLVED_WIRE_REFERENCE', {
+          message: `a.wire: source "${ref.raw}" — no entry named "${ref.portName}"`,
+          details: { ref: ref.raw, side: 'source' },
+        });
+      }
+      return { kind: 'entry', port: ref.portName };
+    }
+    const sub = subNodes.get(ref.nodeName);
+    if (!sub) {
+      throw new RailBuildError('UNRESOLVED_WIRE_REFERENCE', {
+        message: `a.wire: source "${ref.raw}" — no sub-node named "${ref.nodeName}"`,
+        details: { ref: ref.raw, side: 'source' },
+      });
+    }
+    if (!sub.outputs.includes(ref.portName)) {
+      if (sub.inputs.includes(ref.portName)) {
+        throw new RailBuildError('WIRE_DIRECTION_INVALID', {
+          message: `a.wire: source "${ref.raw}" refers to an input of "${ref.nodeName}"; only outputs can be used as sources`,
+          details: { ref: ref.raw, side: 'source' },
+        });
+      }
+      throw new RailBuildError('UNRESOLVED_WIRE_REFERENCE', {
+        message: `a.wire: source "${ref.raw}" — sub-node "${ref.nodeName}" has no output "${ref.portName}"`,
+        details: { ref: ref.raw, side: 'source' },
+      });
+    }
+    return { kind: 'subOutput', subName: ref.nodeName, port: ref.portName };
+  }
+
+  function resolveTarget(ref) {
+    if (ref.nodeName === ENTRY_NODE) {
+      if (!exitSet.has(ref.portName)) {
+        if (entrySet.has(ref.portName)) {
+          throw new RailBuildError('WIRE_DIRECTION_INVALID', {
+            message: `a.wire: target ".${ref.portName}" refers to an entry; only exits can be used as targets`,
+            details: { ref: ref.raw, side: 'target' },
+          });
+        }
+        throw new RailBuildError('UNRESOLVED_WIRE_REFERENCE', {
+          message: `a.wire: target "${ref.raw}" — no exit named "${ref.portName}"`,
+          details: { ref: ref.raw, side: 'target' },
+        });
+      }
+      return { kind: 'exit', port: ref.portName };
+    }
+    const sub = subNodes.get(ref.nodeName);
+    if (!sub) {
+      throw new RailBuildError('UNRESOLVED_WIRE_REFERENCE', {
+        message: `a.wire: target "${ref.raw}" — no sub-node named "${ref.nodeName}"`,
+        details: { ref: ref.raw, side: 'target' },
+      });
+    }
+    if (!sub.inputs.includes(ref.portName)) {
+      if (sub.outputs.includes(ref.portName)) {
+        throw new RailBuildError('WIRE_DIRECTION_INVALID', {
+          message: `a.wire: target "${ref.raw}" refers to an output of "${ref.nodeName}"; only inputs can be used as targets`,
+          details: { ref: ref.raw, side: 'target' },
+        });
+      }
+      throw new RailBuildError('UNRESOLVED_WIRE_REFERENCE', {
+        message: `a.wire: target "${ref.raw}" — sub-node "${ref.nodeName}" has no input "${ref.portName}"`,
+        details: { ref: ref.raw, side: 'target' },
+      });
+    }
+    return { kind: 'subInput', subName: ref.nodeName, port: ref.portName };
+  }
+
+  function addWire(sourceStr, targetStr) {
+    const sourceRef = parseRef(sourceStr, 'a.wire(source, target)', 'source');
+    const targetRef = parseRef(targetStr, 'a.wire(source, target)', 'target');
+
+    const source = resolveSource(sourceRef);
+    const target = resolveTarget(targetRef);
+
+    const sourceKey = source.kind === 'entry'
+      ? endpointKey(ENTRY_NODE, source.port)
+      : endpointKey(source.subName, source.port);
+
+    if (wiredSources.has(sourceKey)) {
+      throw new RailBuildError('MULTIPLE_OUTGOING_WIRES', {
+        message: `a.wire: source "${sourceRef.raw}" already has an outgoing wire`,
+        details: { source: sourceRef.raw },
+      });
+    }
+    wiredSources.add(sourceKey);
+
+    wires.push({ source: { ...source, raw: sourceRef.raw }, target: { ...target, raw: targetRef.raw } });
+  }
+
+  const builder = {
+    entry(...names) {
+      ensureNotSealed('a.entry');
+      if (names.length === 0) {
+        throw new RailBuildError('MISSING_INPUTS', {
+          message: 'a.entry(...names): at least one name required',
+        });
+      }
+      for (const n of names) addEntry(n);
+    },
+
+    exit(...names) {
+      ensureNotSealed('a.exit');
+      if (names.length === 0) {
+        throw new RailBuildError('MISSING_OUTPUTS', {
+          message: 'a.exit(...names): at least one name required',
+        });
+      }
+      for (const n of names) addExit(n);
+    },
+
+    addNode(name, node) {
+      ensureNotSealed('a.addNode');
+      addNode(name, node);
+    },
+
+    wire(sourceStr, targetStr) {
+      ensureNotSealed('a.wire');
+      addWire(sourceStr, targetStr);
+    },
+  };
+
+  const returned = builderFn(builder);
+  if (returned !== undefined) {
+    throw new RailBuildError('ASYNC_BUILDER', {
+      message: 'activity(builderFn): builder must return undefined (synchronous). Did you pass an async function?',
+    });
+  }
+  sealed = true;
+
+  // ----- Whole-graph validation walk (§5.6) -----
+
+  if (entries.length === 0) {
+    throw new RailBuildError('MISSING_INPUTS', {
+      message: 'activity: no entries declared (a.entry required)',
+    });
+  }
+  if (exits.length === 0) {
+    throw new RailBuildError('MISSING_OUTPUTS', {
+      message: 'activity: no exits declared (a.exit required)',
+    });
+  }
+  if (subNodes.size === 0) {
+    throw new RailBuildError('MISSING_NODES', {
+      message: 'activity: no sub-nodes added (a.addNode required)',
+    });
+  }
+
+  // Index wires for fast lookup.
+  /** @type {Map<string, {kind:string,subName?:string,port:string}>} */
+  const outgoing = new Map(); // sourceKey → target
+  /** @type {Map<string, Array<{kind:string,subName?:string,port:string}>>} */
+  const incoming = new Map(); // targetKey → sources[]
+
+  function targetKey(t) {
+    return t.kind === 'exit'
+      ? endpointKey(ENTRY_NODE, t.port)
+      : endpointKey(t.subName, t.port);
+  }
+  function sourceKey(s) {
+    return s.kind === 'entry'
+      ? endpointKey(ENTRY_NODE, s.port)
+      : endpointKey(s.subName, s.port);
+  }
+
+  for (const w of wires) {
+    outgoing.set(sourceKey(w.source), w.target);
+    const tk = targetKey(w.target);
+    if (!incoming.has(tk)) incoming.set(tk, []);
+    incoming.get(tk).push(w.source);
+  }
+
+  // Every entry must have exactly one outgoing wire.
+  for (const entryName of entries) {
+    if (!outgoing.has(endpointKey(ENTRY_NODE, entryName))) {
+      throw new RailBuildError('UNUSED_PORT', {
+        message: `activity: entry ".${entryName}" has no outgoing wire`,
+        details: { kind: 'entry', port: entryName },
+      });
+    }
+  }
+
+  // Every exit must be the target of at least one wire.
+  for (const exitName of exits) {
+    if (!incoming.has(endpointKey(ENTRY_NODE, exitName))) {
+      throw new RailBuildError('UNUSED_PORT', {
+        message: `activity: exit ".${exitName}" has no incoming wire`,
+        details: { kind: 'exit', port: exitName },
+      });
+    }
+  }
+
+  // Every sub-node output must have exactly one outgoing wire.
+  for (const [name, sub] of subNodes) {
+    for (const out of sub.outputs) {
+      if (!outgoing.has(endpointKey(name, out))) {
+        throw new RailBuildError('UNUSED_PORT', {
+          message: `activity: output "${name}.${out}" has no outgoing wire`,
+          details: { node: name, port: out },
+        });
+      }
+    }
+  }
+
+  // Every sub-node must have at least one input wired.
+  for (const [name, sub] of subNodes) {
+    let anyWired = false;
+    for (const inp of sub.inputs) {
+      if (incoming.has(endpointKey(name, inp))) {
+        anyWired = true;
+        break;
+      }
+    }
+    if (!anyWired) {
+      throw new RailBuildError('UNREACHABLE_NODE', {
+        message: `activity: sub-node "${name}" has no incoming wire on any input`,
+        details: { node: name, inputs: sub.inputs },
+      });
+    }
+  }
+
+  // ----- Build the runtime view -----
+
+  // Forward map keyed by sourceKey, value = { kind, subName?, port, raw? }.
+  // We materialise immediately so walks at run time are pure lookups.
+  const wireFromSource = outgoing;
+
+  /** @param {string} entryName */
+  function followFromEntry(entryName) {
+    return wireFromSource.get(endpointKey(ENTRY_NODE, entryName));
+  }
+  function followFromOutput(subName, port) {
+    return wireFromSource.get(endpointKey(subName, port));
+  }
+
+  async function doInvoke(entry, ctx, local, runState, path) {
+    if (!entrySet.has(entry)) {
+      throw new RailRuntimeError('INTERNAL', {
+        flowName: runState.flowName,
+        message: `activity invoked with unknown entry "${entry}"`,
+        details: { invariant: 'unknown entry', entry, declared: entries },
+      });
+    }
+
+    let currentTarget = followFromEntry(entry);
+    if (!local.children) local.children = {};
+
+    while (true) {
+      if (!currentTarget) {
+        throw new RailRuntimeError('INTERNAL', {
+          flowName: runState.flowName,
+          message: 'activity walk reached an unwired endpoint',
+          details: { invariant: 'no outgoing wire' },
+        });
+      }
+      if (currentTarget.kind === 'exit') {
+        return currentTarget.port;
+      }
+      const subName = currentTarget.subName;
+      const subPort = currentTarget.port;
+      const subNode = subNodes.get(subName);
+      if (!subNode) {
+        throw new RailRuntimeError('INTERNAL', {
+          flowName: runState.flowName,
+          message: `activity references missing sub-node "${subName}"`,
+          details: { invariant: 'missing sub-node', subName },
+        });
+      }
+      if (!local.children[subName]) local.children[subName] = {};
+      const subLocal = local.children[subName];
+      const subPath = [...path, subName];
+
+      const exit = await subNode._invoke(subPort, ctx, subLocal, runState, subPath);
+      currentTarget = followFromOutput(subName, exit);
+    }
+  }
+
+  const node = {
+    __rail_type__: 'node',
+    __rail_kind__: 'activity',
+    inputs: entries.slice(),
+    outputs: exits.slice(),
+  };
+
+  node._invoke = (entry, ctx, local, runState, path) =>
+    invokeNode(doInvoke, 'activity', entry, ctx, local, runState, path);
+
+  // Expose the structural data for renderers and introspection. Marked
+  // with leading underscore: not user API (§1.5).
+  node._entries = entries.slice();
+  node._exits = exits.slice();
+  /** @type {Array<{name: string, node: object}>} */
+  node._subNodes = Array.from(subNodes, ([name, sub]) => ({ name, node: sub }));
+  node._wires = wires.map((w) => ({ source: { ...w.source }, target: { ...w.target } }));
+
+  node.toMermaid = (name, opts) => renderActivityMermaid(node, name, opts);
+
+  return node;
 }

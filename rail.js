@@ -1,29 +1,37 @@
 /**
- * rail.js — public API.
+ * rail.js v0.3.0 — public API.
  *
  * A small workflow library: explicit, validated graphs of named
- * steps. Plain ES modules with JSDoc, no runtime dependencies.
+ * nodes with named outputs. Plain ES modules + JSDoc, no runtime
+ * dependencies, no build step.
  *
  * See docs/rail-spec.md for the full specification.
  */
 
-export { node } from './rail/step.js';
+// Atomic builders (§3) and the user-function-level catch wrapper (§11).
+export { atom, nstep, step, pass, fail, catchTo } from './rail/atomic.js';
+
+// Wrapper builder (§4).
+export { pin } from './rail/pin.js';
+
+// Group builders (§5, §6, §7, §8).
 export { activity } from './rail/activity.js';
+export { nrail, railway } from './rail/nrail.js';
 export { parallel } from './rail/parallel.js';
-export { merge } from './rail/merge.js';
-export { catching } from './rail/catching.js';
+
+// Flow (§9).
 export { flow } from './rail/flow.js';
 
-export {
-  isRailNode,
-  exceptionCtx,
-  isExceptionCtx,
-  isParallelCtx,
-  ctxType,
-} from './rail/ctx.js';
+// Utilities (§10).
+export { isRailNode } from './rail/util.js';
 
+// Extension API: invokeNode is exported for custom-kind authors (§2, §15.3).
+export { invokeNode } from './rail/runtime.js';
+
+// Errors (§12).
 export {
+  RailError,
   RailBuildError,
-  RailCheckError,
   RailRuntimeError,
+  RailAggregateError,
 } from './rail/errors.js';

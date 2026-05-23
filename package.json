@@ -1,6 +1,6 @@
 {
   "name": "@isnogudus/rail.js",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Small workflow library: explicit, validated graphs of named steps. No dependencies, no persistence. Runs in modern Node and browsers.",
   "type": "module",
   "main": "./rail.js",

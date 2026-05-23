@@ -1,59 +1,44 @@
 /**
- * §9.3 — Sub-activity composition.
+ * §14.3 — Sub-activity composition.
  *
- * An Activity can be embedded as a sub-node inside another Activity.
- * The outer's compile recursively compiles the inner. Inner step
- * names appear in the trace as `<sub-name>.<inner-step>`, and the
- * compound entry sits at the outer's depth.
+ * A reusable validation activity used twice in the same parent
+ * under different local names (independent positions, independent
+ * locals).
  */
 
-import { activity, node, flow } from '../rail.js';
+import { activity, atom, flow } from '../rail.js';
 
-const inner = activity((a) => {
-  const start = a.entry('in');
-  const { success, failure } = a.standardExits();
-
-  const encrypt = a.addNode('encrypt', node((ctx) => {
-    if (!ctx.keys) return 'noKeys';
-    return { output: 'ok', ctx: { ...ctx, encrypted: true } };
-  }, { outputs: ['ok', 'noKeys'] }));
-
-  const send = a.addNode('send', node(() => 'ok',
-    { outputs: ['ok', 'net5xx'] }));
-
-  a.wire(start,                  encrypt);
-  a.wire(encrypt.out('ok'),      send);
-  a.wire(encrypt.out('noKeys'),  failure);
-  a.wire(send.out('ok'),         success);
-  a.wire(send.out('net5xx'),     failure);
+const validate = activity((a) => {
+  a.entry('in');
+  a.addNode('check', atom(async (ctx) => {
+    if (ctx.value == null) {
+      ctx.reason = 'missing';
+      return 'bad';
+    }
+    return 'ok';
+  }, { outputs: ['ok', 'bad'] }));
+  a.exit('ok');
+  a.exit('bad');
+  a.wire('.in',       'check.in');
+  a.wire('check.ok',  '.ok');
+  a.wire('check.bad', '.bad');
 });
 
-const outer = activity((a) => {
-  const start = a.entry('in');
-  const { success, failure } = a.standardExits();
-
-  const preflight = a.addNode('preflight', node((ctx) =>
-    ctx.skip ? 'skip' : 'ok', { outputs: ['ok', 'skip'] }));
-
-  const wrapped = a.addNode('inner', inner);
-
-  a.wire(start,                  preflight);
-  a.wire(preflight.out('ok'),    wrapped);
-  a.wire(preflight.out('skip'),  success);
-  a.wire(wrapped.out('success'), success);
-  a.wire(wrapped.out('failure'), failure);
+const twoStage = activity((a) => {
+  a.entry('in');
+  a.addNode('v1', validate);
+  a.addNode('v2', validate);
+  a.exit('done');
+  a.exit('rejected');
+  a.wire('.in',     'v1.in');
+  a.wire('v1.ok',   'v2.in');
+  a.wire('v1.bad',  '.rejected');
+  a.wire('v2.ok',   '.done');
+  a.wire('v2.bad',  '.rejected');
 });
 
-outer.check();
+const r1 = await flow('two-stage', twoStage).run({ value: 42 });
+console.log('value=42  →', r1.exit);
 
-console.log('--- happy path ---');
-const ok = await flow('outer', outer).run({ keys: 'k' });
-console.log('terminus:', ok.terminus, '\n');
-
-console.log('--- skipped via preflight ---');
-const skip = await flow('outer', outer).run({ skip: true });
-console.log('terminus:', skip.terminus, '\n');
-
-console.log('--- inner failure (no keys) ---');
-const fail = await flow('outer', outer).run({});
-console.log('terminus:', fail.terminus);
+const r2 = await flow('two-stage', twoStage).run({});
+console.log('no value  →', r2.exit, r2.ctx.reason);

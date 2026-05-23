@@ -1,39 +1,29 @@
 /**
- * §9.11 — Custom logger.
+ * §14.11 — Custom logger.
  *
- * Pass a function `(entry: TraceEntry) => void` as `opts.logger` to
- * replace the default console output. The logger is called once per
- * step, after it finishes.
+ * Each `flow.run(...)` can be given an `opts.logger`. The logger is
+ * called once per successfully completed step. Steps that ended in a
+ * library throw produce no logger output (they have no 'end' event).
  */
 
-import { activity, node, flow } from '../rail.js';
+import { activity, step, flow } from '../rail.js';
 
 const wf = activity((a) => {
-  const start = a.entry('in');
-  const ok = a.exit('ok');
-  const v = a.addNode('validate', node(
-    (c) => ({ output: 'ok', ctx: { ...c, validated: true } }),
-    { outputs: ['ok'] }
-  ));
-  const e = a.addNode('encrypt', node(
-    (c) => ({ output: 'ok', ctx: { ...c, encrypted: true } }),
-    { outputs: ['ok'] }
-  ));
-  a.wire(start,        v);
-  a.wire(v.out('ok'),  e);
-  a.wire(e.out('ok'),  ok);
+  a.entry('in');
+  a.addNode('a', step(async (ctx) => { ctx.a = 1; }));
+  a.addNode('b', step(async (ctx) => { ctx.b = 2; }));
+  a.exit('done');
+  a.wire('.in', 'a.success');
+  a.wire('a.success', 'b.success');
+  a.wire('a.failure', '.done');
+  a.wire('b.success', '.done');
+  a.wire('b.failure', '.done');
 });
-wf.check();
 
-const lines = [];
-const logger = (entry) => {
-  const tag = entry.threw ? 'XX' : 'OK';
-  lines.push(
-    `[${tag}] depth=${entry.depth} ${entry.step.padEnd(12)} ` +
-    `${entry.duration.toFixed(2)}ms -> ${entry.output ?? '(threw)'}`
-  );
-};
-
-const r = await flow('wf', wf).run({}, { logger });
-console.log(lines.join('\n'));
-console.log('\nterminus:', r.terminus);
+await flow('logged', wf).run({}, {
+  logger: (entry) => {
+    const path = entry.path.length === 0 ? '<top>' : entry.path.join('.');
+    const dur = (entry.endTime - entry.startTime).toFixed(2);
+    console.log(`${path.padEnd(8)} ${dur.padStart(6)}ms → ${entry.exit}`);
+  },
+});

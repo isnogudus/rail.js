@@ -1,36 +1,34 @@
 /**
  * Stateless flow + concurrent runs.
  *
- * `flow(...)` returns a stateless object: all run-time state lives
- * in the closure of `run(...)`. The same flow object can be invoked
- * many times concurrently — each run is fully independent (its own
- * counter, ctx, trace, signals).
+ * Node values are immutable; per-run state lives in `runState` and
+ * the per-run `local` tree (owned by `flow.run`). The same flow can
+ * be invoked any number of times, including concurrently — no
+ * coordination required.
  */
 
-import { activity, node, flow } from '../rail.js';
+import { activity, step, flow } from '../rail.js';
 
-const slowAdder = activity((a) => {
-  const start = a.entry('in');
-  const ok = a.exit('ok');
-  const add = a.addNode('add', node(async (ctx) => {
-    await new Promise((r) => setTimeout(r, Math.random() * 30));
-    return { output: 'ok', ctx: { ...ctx, sum: ctx.a + ctx.b } };
-  }, { outputs: ['ok'] }));
-  a.wire(start, add);
-  a.wire(add.out('ok'), ok);
+const wf = activity((a) => {
+  a.entry('in');
+  a.addNode('work', step(async (ctx) => {
+    await new Promise((r) => setTimeout(r, ctx.delay ?? 5));
+    ctx.touched = ctx.id;
+  }));
+  a.exit('done');
+  a.wire('.in', 'work.success');
+  a.wire('work.success', '.done');
+  a.wire('work.failure', '.done');
 });
-slowAdder.check();
 
-const f = flow('slowAdder', slowAdder);
+const f = flow('concurrent', wf);
 
-// Launch 5 concurrent runs on the SAME flow object. They do not
-// interfere — each gets its own run-state in its own closure.
-const results = await Promise.all(
-  Array.from({ length: 5 }, (_, i) =>
-    f.run({ a: i, b: i * 2 }, { logger: () => {} })
-  )
-);
+const runs = await Promise.all([
+  f.run({ id: 'a', delay: 30 }, { logger: () => {} }),
+  f.run({ id: 'b', delay: 10 }, { logger: () => {} }),
+  f.run({ id: 'c', delay: 20 }, { logger: () => {} }),
+]);
 
-for (const [i, r] of results.entries()) {
-  console.log(`run ${i}: terminus=${r.terminus}, sum=${r.ctx.sum}, traceLen=${r.trace.length}`);
+for (const r of runs) {
+  console.log(`run ${r.ctx.id}: exit=${r.exit}, traceLen=${r.trace.length}`);
 }
