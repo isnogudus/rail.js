@@ -21,14 +21,18 @@ build time and traced at runtime.
   for live observation.
 - Cooperative cancellation (`opts.signal`) and a hard kill switch
   (`opts.killSignal`).
-- Runs in modern Node and modern browsers (native ESM).
+- Runs unchanged in **Node 22+**, modern browsers, and **QuickJS** —
+  cancellation gracefully degrades when `AbortController` is absent
+  from the host environment.
 - Custom node kinds are first-class via `__rail_type__: 'node'` and
   the exported `invokeNode` extension API.
 
 The full specification lives in [`docs/rail-spec.md`](./docs/rail-spec.md);
 the deployed site at <https://isnogudus.github.io/rail.js/> includes a
 [rendered spec page](https://isnogudus.github.io/rail.js/spec.html) and
-[live demos](https://isnogudus.github.io/rail.js/#demo). The
+live demos for [Railway](https://isnogudus.github.io/rail.js/#railway),
+[n-Rail](https://isnogudus.github.io/rail.js/#nrail), and
+[Activity](https://isnogudus.github.io/rail.js/#activity). The
 [`CHANGELOG.md`](./CHANGELOG.md) documents version-to-version changes.
 This README is the practical guide.
 
@@ -359,8 +363,8 @@ unfilled and the throw propagates.
 ### Mermaid
 
 ```js
-const m = flow('myflow', node).toMermaid({ direction: 'LR' });
-const m2 = activity.toMermaid('myActivity');
+const m1 = flow('myflow', node).toMermaid({ direction: 'LR' });
+const m2 = wf.toMermaid('myActivity');           // directly on an activity node
 ```
 
 Sub-activities render as nested subgraphs; `parallel` renders as a
@@ -382,6 +386,19 @@ under `rail/` are implementation detail.
 
 No build step, no bundler, no TypeScript. Modern bundlers (Vite,
 esbuild, webpack) consume the source directly.
+
+## Scripts
+
+| Script | What it does |
+|--------|--------------|
+| `npm test`           | Vitest run — 135 unit + integration tests against Node. |
+| `npm run test:watch` | Vitest in watch mode. |
+| `npm run test:qjs`   | Smoke-test against vanilla QuickJS (`qjs --std test-quickjs.js`). 50 assertions covering markers, trace shape, all builders, parallel + merge, aggregate-error, step budget, and the QuickJS-specific `runInfo.signal === undefined` contract. Requires `qjs` on PATH. |
+| `npm run example`    | Run [`example.js`](./example.js) — overview demo (`railway`, `parallel + merge`, sub-`pin`, custom merge ctx). |
+| `npm run examples`   | Run every file in [`examples/`](./examples/) sequentially via [`run-all.js`](./examples/run-all.js). |
+| `npm run build`      | Produce `dist/rail.js` (~44 KB) and `dist/rail.min.js` (~23 KB / ~7 KB gzip) via esbuild. Used for release-asset bundles (see [the workflow](./.github/workflows/release.yml)). |
+| `npm run site:sync`  | Copy the current `rail.js` + `rail/` + `docs/rail-spec.md` into `site/lib/` and `site/rail-spec.md` so the deployed site reflects local sources. |
+| `npm run site:dev`   | Serve `site/` on `http://localhost:8080` via `python3 -m http.server`. |
 
 ## License
 

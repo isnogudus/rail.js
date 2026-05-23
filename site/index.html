@@ -39,6 +39,7 @@
   <nav class="nav-links">
     <a href="#problem">Problem</a>
     <a href="#concepts">Concepts</a>
+    <a href="#features">Features</a>
     <a href="#railway">Railway</a>
     <a href="#nrail">n-Rail</a>
     <a href="#activity">Activity</a>
@@ -299,344 +300,12 @@
 </section>
 
 <!-- ====================================================================
-     03 / VALIDATION
-     ==================================================================== -->
-<section id="validation">
-  <div class="wrap">
-    <div class="sec-head">
-      <div class="sec-num">03 / Validation</div>
-      <div>
-        <h2 class="sec-title">Bugs caught at build time, not in production.</h2>
-        <p class="sec-sub">
-          Every built-in builder validates its result before returning. There
-          is no separate <span class="mono">check()</span> call to remember — a node value handed
-          back from any builder is ready to use.
-        </p>
-      </div>
-    </div>
-
-    <div class="grid-2">
-      <div class="card">
-        <div class="phase-row">
-          <span class="phase-letter">A</span>
-          <span class="phase-name">Eager per-operation</span>
-          <span class="phase-ex">INVALID_NAME · NOT_A_NODE · MULTIPLE_OUTGOING_WIRES</span>
-        </div>
-        <div class="phase-row">
-          <span class="phase-letter">B</span>
-          <span class="phase-name">Whole-graph walk</span>
-          <span class="phase-ex">MISSING_NODES · UNUSED_PORT · UNREACHABLE_NODE</span>
-        </div>
-        <div class="phase-row">
-          <span class="phase-letter">C</span>
-          <span class="phase-name">Sealing &amp; async guards</span>
-          <span class="phase-ex">SEALED · ASYNC_BUILDER</span>
-        </div>
-      </div>
-
-      <div>
-        <p class="bullet" style="margin: 0 0 14px;"><b>Eager.</b>
-          Each builder method (<span class="mono">a.wire</span>, <span class="mono">r.step</span>, …)
-          raises <span class="mono">RailBuildError</span> at the call site, with a stack
-          trace pointing to the offending line.</p>
-        <p class="bullet" style="margin: 0 0 14px;"><b>Whole-graph.</b>
-          At the end of <span class="mono">activity</span> / <span class="mono">nrail</span> / <span class="mono">railway</span>
-          a single identity-memoised walk catches missing wires, unreachable
-          sub-nodes, and any sub-node output that has no outgoing wire.</p>
-        <p class="bullet" style="margin: 0 0 14px;"><b>Convergence is intentional.</b>
-          Multiple wires ending at the same target endpoint are allowed —
-          “no matter which path led here, continue from this node.”</p>
-        <p class="bullet" style="margin: 0;"><b>Sealed after build.</b>
-          The builder object is inert once the closure returns; any captured
-          reference raises <span class="mono">RailBuildError(SEALED)</span> on use.</p>
-      </div>
-    </div>
-  </div>
-</section>
-
-<!-- ====================================================================
-     04 / LIVE: RAILWAY
-     ==================================================================== -->
-<section id="railway">
-  <div class="wrap">
-    <div class="sec-head">
-      <div class="sec-num">04 / Live · Railway</div>
-      <div>
-        <h2 class="sec-title">Success on one rail, failure on the other.</h2>
-        <p class="sec-sub">
-          The <span class="mono">sendMessage</span> pipeline from above is a real
-          <span class="mono">railway(...)</span> running in your browser. Throws from any
-          <span class="mono">r.step</span> route to <span class="mono">failure</span> with the original error on
-          <span class="mono">ctx._error</span>; an <span class="mono">r.fail</span> on the failure rail then
-          inspects it.
-        </p>
-      </div>
-    </div>
-
-    <div class="stage">
-      <div class="stage-label">flow('sendMessage').run(ctx)</div>
-
-      <div class="tabs">
-        <button class="tab active" data-tab="diagram">Diagram</button>
-        <button class="tab"        data-tab="source">Source</button>
-      </div>
-
-      <div class="tab-panel active" data-tab="diagram">
-        <div class="stage-controls" style="margin-bottom: 18px;">
-          <button class="btn active" data-scenario="happy">Happy path</button>
-          <button class="btn ghost"  data-scenario="validate">Validation fails</button>
-          <button class="btn ghost"  data-scenario="encrypt">Encryption fails</button>
-          <button class="btn ghost"  data-scenario="send">Send fails</button>
-        </div>
-
-        <div id="rwy-diagram" class="diagram-host"></div>
-
-        <div class="demo-grid">
-          <div><div class="compare-label">Input</div><pre class="result" id="rwy-input"></pre></div>
-          <div><div class="compare-label">Trace</div><div class="trace" id="rwy-trace"></div></div>
-          <div><div class="compare-label">Result</div><pre class="result" id="rwy-result"></pre></div>
-        </div>
-      </div>
-
-      <div class="tab-panel" data-tab="source">
-        <pre class="code"><code id="rwy-source"></code></pre>
-      </div>
-    </div>
-  </div>
-</section>
-
-<!-- ====================================================================
-     05 / LIVE: n-RAIL
-     ==================================================================== -->
-<section id="nrail">
-  <div class="wrap">
-    <div class="sec-head">
-      <div class="sec-num">05 / Live · n-Rail</div>
-      <div>
-        <h2 class="sec-title">Multi-track outcomes — and a loop via label/link.</h2>
-        <p class="sec-sub">
-          An order pipeline with two n-Rail-specific features. First,
-          <em>per-rail convergence</em>: every upstream
-          <span class="mono">fail</span> output wires automatically into
-          <span class="mono">cleanup.fail</span> — no explicit wires needed. Second, a
-          <em>retry loop via label + link</em>:
-          <span class="mono">r.label('charge', 'main')</span> anchors a point in the
-          <span class="mono">main</span> rail, and <span class="mono">r.link('charge', 'retry')</span>
-          sends the retry rail back to that anchor. The loop spans three
-          nodes (<span class="mono">chargeAttempt</span> → <span class="mono">shouldRetry</span> →
-          <span class="mono">charge</span> → <span class="mono">chargeAttempt</span>), bounded by
-          <span class="mono">local.retries</span>.
-        </p>
-      </div>
-    </div>
-
-    <div class="stage">
-      <div class="stage-label">flow('orderPipeline').run(ctx)</div>
-
-      <div class="tabs">
-        <button class="tab active" data-tab="diagram">Diagram</button>
-        <button class="tab"        data-tab="source">Source</button>
-      </div>
-
-      <div class="tab-panel active" data-tab="diagram">
-        <div class="stage-controls" style="margin-bottom: 18px;">
-          <button class="btn active" data-scenario="happy">Happy path</button>
-          <button class="btn ghost"  data-scenario="oneRetry">One retry, then success</button>
-          <button class="btn ghost"  data-scenario="exhausted">Retries exhausted</button>
-          <button class="btn ghost"  data-scenario="missing">Missing order ID</button>
-        </div>
-
-        <div id="nrl-diagram" class="diagram-host"></div>
-
-        <div class="demo-grid">
-          <div><div class="compare-label">Input</div><pre class="result" id="nrl-input"></pre></div>
-          <div><div class="compare-label">Trace</div><div class="trace" id="nrl-trace"></div></div>
-          <div><div class="compare-label">Result</div><pre class="result" id="nrl-result"></pre></div>
-        </div>
-      </div>
-
-      <div class="tab-panel" data-tab="source">
-        <pre class="code"><code id="nrl-source"></code></pre>
-      </div>
-    </div>
-  </div>
-</section>
-
-<!-- ====================================================================
-     06 / LIVE: ACTIVITY
-     ==================================================================== -->
-<section id="activity">
-  <div class="wrap">
-    <div class="sec-head">
-      <div class="sec-num">06 / Live · Activity</div>
-      <div>
-        <h2 class="sec-title">A backward edge across multiple nodes.</h2>
-        <p class="sec-sub">
-          An approval workflow: <span class="mono">submit → review</span>, and
-          <span class="mono">review</span> branches to <span class="mono">publish</span>,
-          <span class="mono">revise</span>, or the <span class="mono">.rejected</span> exit. On
-          <span class="mono">revise.ok</span>, control flows <em>back</em> into
-          <span class="mono">review.in</span> — a cycle that spans three nodes.
-          <span class="mono">review.in</span> converges from two sources (the initial
-          <span class="mono">submit</span> and subsequent <span class="mono">revise</span> iterations);
-          <span class="mono">review.local.reviews</span> counts the revisions across the
-          single run. n-Rail can express this with a label on
-          <span class="mono">review</span> and a link from the <span class="mono">changes</span>
-          rail; <span class="mono">activity</span> writes the backward edge directly.
-        </p>
-      </div>
-    </div>
-
-    <div class="stage">
-      <div class="stage-label">flow('approval').run(ctx)</div>
-
-      <div class="tabs">
-        <button class="tab active" data-tab="diagram">Diagram</button>
-        <button class="tab"        data-tab="source">Source</button>
-      </div>
-
-      <div class="tab-panel active" data-tab="diagram">
-        <div class="stage-controls" style="margin-bottom: 18px;">
-          <button class="btn active" data-scenario="approved">Approved</button>
-          <button class="btn ghost"  data-scenario="oneRevision">One revision, then approved</button>
-          <button class="btn ghost"  data-scenario="twoRevisions">Two revisions, then approved</button>
-          <button class="btn ghost"  data-scenario="rejected">Rejected</button>
-        </div>
-
-        <div id="act-diagram" class="diagram-host"></div>
-
-        <div class="demo-grid">
-          <div><div class="compare-label">Input</div><pre class="result" id="act-input"></pre></div>
-          <div><div class="compare-label">Trace</div><div class="trace" id="act-trace"></div></div>
-          <div><div class="compare-label">Result</div><pre class="result" id="act-result"></pre></div>
-        </div>
-      </div>
-
-      <div class="tab-panel" data-tab="source">
-        <pre class="code"><code id="act-source"></code></pre>
-      </div>
-    </div>
-  </div>
-</section>
-
-<!-- ====================================================================
-     07 / PARALLEL + MERGE
-     ==================================================================== -->
-<section id="parallel">
-  <div class="wrap">
-    <div class="sec-head">
-      <div class="sec-num">07 / Parallel · merge</div>
-      <div>
-        <h2 class="sec-title">Concurrent branches, one decision point.</h2>
-        <p class="sec-sub">
-          <span class="mono">parallel({ profile, orders }, merge)</span> runs both
-          branches concurrently. Each branch receives a shallow-copied ctx
-          and produces its own. The optional merge node receives the
-          aggregated <span class="mono">{ branchName: branchCtx }</span> ctx and
-          chooses the parallel's exit; without a merge, the parallel exits
-          at <span class="mono">'out'</span>.
-        </p>
-      </div>
-    </div>
-
-    <div class="stage">
-      <div class="stage-label">flow('enrich').run(ctx)</div>
-
-      <div class="tabs">
-        <button class="tab active" data-tab="diagram">Diagram</button>
-        <button class="tab"        data-tab="source">Source</button>
-      </div>
-
-      <div class="tab-panel active" data-tab="diagram">
-        <div class="stage-controls" style="margin-bottom: 18px;">
-          <button class="btn active" data-scenario="both">Both succeed</button>
-          <button class="btn ghost"  data-scenario="profileFails">Profile branch fails</button>
-        </div>
-
-        <div id="par-diagram" class="diagram-host"></div>
-
-        <div class="demo-grid">
-          <div><div class="compare-label">Input</div><pre class="result" id="par-input"></pre></div>
-          <div><div class="compare-label">Trace</div><div class="trace" id="par-trace"></div></div>
-          <div><div class="compare-label">Result</div><pre class="result" id="par-result"></pre></div>
-        </div>
-      </div>
-
-      <div class="tab-panel" data-tab="source">
-        <pre class="code"><code id="par-source"></code></pre>
-      </div>
-    </div>
-  </div>
-</section>
-
-<!-- ====================================================================
-     08 / INSTALL
-     ==================================================================== -->
-<section id="install">
-  <div class="wrap">
-    <div class="sec-head">
-      <div class="sec-num">08 / Install</div>
-      <div>
-        <h2 class="sec-title">Drop it into a page, or install it from npm.</h2>
-        <p class="sec-sub">
-          Every tagged release attaches a pre-built ESM bundle as a
-          release asset — single file, single URL, no build step on
-          your side. For Node and bundler-based setups, install from
-          npm. For CDN-style import-map setups, pull a tag through
-          jsDelivr.
-        </p>
-      </div>
-    </div>
-
-    <div class="grid-3">
-      <div class="card">
-        <div class="pill">browser · zero build</div>
-        <h4 style="margin: 12px 0 8px;">Release asset</h4>
-        <p style="margin-bottom: 12px;">
-          ~23 KB minified, ~7 KB gzipped. Pinned per tag.
-        </p>
-<pre class="code" style="font-size: 11.5px;"><span class="k">&lt;script</span> <span class="n">type</span>=<span class="s">"module"</span><span class="k">&gt;</span>
-  <span class="k">import</span> { railway, flow } <span class="k">from</span>
-    <span class="s">'https://github.com/isnogudus/rail.js'</span>
-  + <span class="s">'/releases/download/v0.3.0/rail.min.js'</span>;
-<span class="k">&lt;/script&gt;</span></pre>
-      </div>
-      <div class="card">
-        <div class="pill">browser · CDN</div>
-        <h4 style="margin: 12px 0 8px;">jsDelivr from tag</h4>
-        <p style="margin-bottom: 12px;">
-          Reads the published source tree at a Git tag. Multiple
-          modules, one per file.
-        </p>
-<pre class="code" style="font-size: 11.5px;"><span class="k">&lt;script</span> <span class="n">type</span>=<span class="s">"importmap"</span><span class="k">&gt;</span>
-  { <span class="s">"imports"</span>: {
-      <span class="s">"rail.js"</span>: <span class="s">"https://cdn.jsdelivr.net/gh/"</span>
-      + <span class="s">"isnogudus/rail.js@v0.3.0/rail.js"</span>
-    } }
-<span class="k">&lt;/script&gt;</span></pre>
-      </div>
-      <div class="card">
-        <div class="pill">node · bundler</div>
-        <h4 style="margin: 12px 0 8px;">From npm</h4>
-        <p style="margin-bottom: 12px;">
-          For Node, Vite, esbuild, webpack — the canonical install.
-        </p>
-<pre class="code" style="font-size: 11.5px;"><span class="n">$</span> <span class="k">npm install</span> @isnogudus/rail.js
-
-<span class="k">import</span> { railway, flow }
-  <span class="k">from</span> <span class="s">'@isnogudus/rail.js'</span>;</pre>
-      </div>
-    </div>
-  </div>
-</section>
-
-<!-- ====================================================================
-     09 / FEATURES
+     03 / FEATURES
      ==================================================================== -->
 <section id="features">
   <div class="wrap">
     <div class="sec-head">
-      <div class="sec-num">09 / Features</div>
+      <div class="sec-num">03 / Features</div>
       <div>
         <h2 class="sec-title">Small surface, sharp edges where they matter.</h2>
       </div>
@@ -719,6 +388,338 @@
         <div class="mono" style="font-size: 11px; color: #8e8675; text-align: right; line-height: 1.7;">
           Result&lt;T,E&gt;<br/>StateT &lt;Either&gt;<br/>Trailblazer Activity<br/>→ rail.js
         </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ====================================================================
+     04 / VALIDATION
+     ==================================================================== -->
+<section id="validation">
+  <div class="wrap">
+    <div class="sec-head">
+      <div class="sec-num">04 / Validation</div>
+      <div>
+        <h2 class="sec-title">Bugs caught at build time, not in production.</h2>
+        <p class="sec-sub">
+          Every built-in builder validates its result before returning. There
+          is no separate <span class="mono">check()</span> call to remember — a node value handed
+          back from any builder is ready to use.
+        </p>
+      </div>
+    </div>
+
+    <div class="grid-2">
+      <div class="card">
+        <div class="phase-row">
+          <span class="phase-letter">A</span>
+          <span class="phase-name">Eager per-operation</span>
+          <span class="phase-ex">INVALID_NAME · NOT_A_NODE · MULTIPLE_OUTGOING_WIRES</span>
+        </div>
+        <div class="phase-row">
+          <span class="phase-letter">B</span>
+          <span class="phase-name">Whole-graph walk</span>
+          <span class="phase-ex">MISSING_NODES · UNUSED_PORT · UNREACHABLE_NODE</span>
+        </div>
+        <div class="phase-row">
+          <span class="phase-letter">C</span>
+          <span class="phase-name">Sealing &amp; async guards</span>
+          <span class="phase-ex">SEALED · ASYNC_BUILDER</span>
+        </div>
+      </div>
+
+      <div>
+        <p class="bullet" style="margin: 0 0 14px;"><b>Eager.</b>
+          Each builder method (<span class="mono">a.wire</span>, <span class="mono">r.step</span>, …)
+          raises <span class="mono">RailBuildError</span> at the call site, with a stack
+          trace pointing to the offending line.</p>
+        <p class="bullet" style="margin: 0 0 14px;"><b>Whole-graph.</b>
+          At the end of <span class="mono">activity</span> / <span class="mono">nrail</span> / <span class="mono">railway</span>
+          a single identity-memoised walk catches missing wires, unreachable
+          sub-nodes, and any sub-node output that has no outgoing wire.</p>
+        <p class="bullet" style="margin: 0 0 14px;"><b>Convergence is intentional.</b>
+          Multiple wires ending at the same target endpoint are allowed —
+          “no matter which path led here, continue from this node.”</p>
+        <p class="bullet" style="margin: 0;"><b>Sealed after build.</b>
+          The builder object is inert once the closure returns; any captured
+          reference raises <span class="mono">RailBuildError(SEALED)</span> on use.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ====================================================================
+     04 / LIVE: RAILWAY
+     ==================================================================== -->
+<section id="railway">
+  <div class="wrap">
+    <div class="sec-head">
+      <div class="sec-num">05 / Live · Railway</div>
+      <div>
+        <h2 class="sec-title">Success on one rail, failure on the other.</h2>
+        <p class="sec-sub">
+          The <span class="mono">sendMessage</span> pipeline from above is a real
+          <span class="mono">railway(...)</span> running in your browser. Throws from any
+          <span class="mono">r.step</span> route to <span class="mono">failure</span> with the original error on
+          <span class="mono">ctx._error</span>; an <span class="mono">r.fail</span> on the failure rail then
+          inspects it.
+        </p>
+      </div>
+    </div>
+
+    <div class="stage">
+      <div class="stage-label">flow('sendMessage').run(ctx)</div>
+
+      <div class="tabs">
+        <button class="tab active" data-tab="diagram">Diagram</button>
+        <button class="tab"        data-tab="source">Source</button>
+      </div>
+
+      <div class="tab-panel active" data-tab="diagram">
+        <div class="stage-controls" style="margin-bottom: 18px;">
+          <button class="btn active" data-scenario="happy">Happy path</button>
+          <button class="btn ghost"  data-scenario="validate">Validation fails</button>
+          <button class="btn ghost"  data-scenario="encrypt">Encryption fails</button>
+          <button class="btn ghost"  data-scenario="send">Send fails</button>
+        </div>
+
+        <div id="rwy-diagram" class="diagram-host"></div>
+
+        <div class="demo-grid">
+          <div><div class="compare-label">Input</div><pre class="result" id="rwy-input"></pre></div>
+          <div><div class="compare-label">Trace</div><div class="trace" id="rwy-trace"></div></div>
+          <div><div class="compare-label">Result</div><pre class="result" id="rwy-result"></pre></div>
+        </div>
+      </div>
+
+      <div class="tab-panel" data-tab="source">
+        <pre class="code"><code id="rwy-source"></code></pre>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ====================================================================
+     05 / LIVE: n-RAIL
+     ==================================================================== -->
+<section id="nrail">
+  <div class="wrap">
+    <div class="sec-head">
+      <div class="sec-num">06 / Live · n-Rail</div>
+      <div>
+        <h2 class="sec-title">Multi-track outcomes — and a loop via label/link.</h2>
+        <p class="sec-sub">
+          An order pipeline with two n-Rail-specific features. First,
+          <em>per-rail convergence</em>: every upstream
+          <span class="mono">fail</span> output wires automatically into
+          <span class="mono">cleanup.fail</span> — no explicit wires needed. Second, a
+          <em>retry loop via label + link</em>:
+          <span class="mono">r.label('charge', 'main')</span> anchors a point in the
+          <span class="mono">main</span> rail, and <span class="mono">r.link('charge', 'retry')</span>
+          sends the retry rail back to that anchor. The loop spans three
+          nodes (<span class="mono">chargeAttempt</span> → <span class="mono">shouldRetry</span> →
+          <span class="mono">charge</span> → <span class="mono">chargeAttempt</span>), bounded by
+          <span class="mono">local.retries</span>.
+        </p>
+      </div>
+    </div>
+
+    <div class="stage">
+      <div class="stage-label">flow('orderPipeline').run(ctx)</div>
+
+      <div class="tabs">
+        <button class="tab active" data-tab="diagram">Diagram</button>
+        <button class="tab"        data-tab="source">Source</button>
+      </div>
+
+      <div class="tab-panel active" data-tab="diagram">
+        <div class="stage-controls" style="margin-bottom: 18px;">
+          <button class="btn active" data-scenario="happy">Happy path</button>
+          <button class="btn ghost"  data-scenario="oneRetry">One retry, then success</button>
+          <button class="btn ghost"  data-scenario="exhausted">Retries exhausted</button>
+          <button class="btn ghost"  data-scenario="missing">Missing order ID</button>
+        </div>
+
+        <div id="nrl-diagram" class="diagram-host"></div>
+
+        <div class="demo-grid">
+          <div><div class="compare-label">Input</div><pre class="result" id="nrl-input"></pre></div>
+          <div><div class="compare-label">Trace</div><div class="trace" id="nrl-trace"></div></div>
+          <div><div class="compare-label">Result</div><pre class="result" id="nrl-result"></pre></div>
+        </div>
+      </div>
+
+      <div class="tab-panel" data-tab="source">
+        <pre class="code"><code id="nrl-source"></code></pre>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ====================================================================
+     06 / LIVE: ACTIVITY
+     ==================================================================== -->
+<section id="activity">
+  <div class="wrap">
+    <div class="sec-head">
+      <div class="sec-num">07 / Live · Activity</div>
+      <div>
+        <h2 class="sec-title">A backward edge across multiple nodes.</h2>
+        <p class="sec-sub">
+          An approval workflow: <span class="mono">submit → review</span>, and
+          <span class="mono">review</span> branches to <span class="mono">publish</span>,
+          <span class="mono">revise</span>, or the <span class="mono">.rejected</span> exit. On
+          <span class="mono">revise.ok</span>, control flows <em>back</em> into
+          <span class="mono">review.in</span> — a cycle that spans three nodes.
+          <span class="mono">review.in</span> converges from two sources (the initial
+          <span class="mono">submit</span> and subsequent <span class="mono">revise</span> iterations);
+          <span class="mono">review.local.reviews</span> counts the revisions across the
+          single run. n-Rail can express this with a label on
+          <span class="mono">review</span> and a link from the <span class="mono">changes</span>
+          rail; <span class="mono">activity</span> writes the backward edge directly.
+        </p>
+      </div>
+    </div>
+
+    <div class="stage">
+      <div class="stage-label">flow('approval').run(ctx)</div>
+
+      <div class="tabs">
+        <button class="tab active" data-tab="diagram">Diagram</button>
+        <button class="tab"        data-tab="source">Source</button>
+      </div>
+
+      <div class="tab-panel active" data-tab="diagram">
+        <div class="stage-controls" style="margin-bottom: 18px;">
+          <button class="btn active" data-scenario="approved">Approved</button>
+          <button class="btn ghost"  data-scenario="oneRevision">One revision, then approved</button>
+          <button class="btn ghost"  data-scenario="twoRevisions">Two revisions, then approved</button>
+          <button class="btn ghost"  data-scenario="rejected">Rejected</button>
+        </div>
+
+        <div id="act-diagram" class="diagram-host"></div>
+
+        <div class="demo-grid">
+          <div><div class="compare-label">Input</div><pre class="result" id="act-input"></pre></div>
+          <div><div class="compare-label">Trace</div><div class="trace" id="act-trace"></div></div>
+          <div><div class="compare-label">Result</div><pre class="result" id="act-result"></pre></div>
+        </div>
+      </div>
+
+      <div class="tab-panel" data-tab="source">
+        <pre class="code"><code id="act-source"></code></pre>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ====================================================================
+     07 / PARALLEL + MERGE
+     ==================================================================== -->
+<section id="parallel">
+  <div class="wrap">
+    <div class="sec-head">
+      <div class="sec-num">08 / Parallel · merge</div>
+      <div>
+        <h2 class="sec-title">Concurrent branches, one decision point.</h2>
+        <p class="sec-sub">
+          <span class="mono">parallel({ profile, orders }, merge)</span> runs both
+          branches concurrently. Each branch receives a shallow-copied ctx
+          and produces its own. The optional merge node receives the
+          aggregated <span class="mono">{ branchName: branchCtx }</span> ctx and
+          chooses the parallel's exit; without a merge, the parallel exits
+          at <span class="mono">'out'</span>.
+        </p>
+      </div>
+    </div>
+
+    <div class="stage">
+      <div class="stage-label">flow('enrich').run(ctx)</div>
+
+      <div class="tabs">
+        <button class="tab active" data-tab="diagram">Diagram</button>
+        <button class="tab"        data-tab="source">Source</button>
+      </div>
+
+      <div class="tab-panel active" data-tab="diagram">
+        <div class="stage-controls" style="margin-bottom: 18px;">
+          <button class="btn active" data-scenario="both">Both succeed</button>
+          <button class="btn ghost"  data-scenario="profileFails">Profile branch fails</button>
+        </div>
+
+        <div id="par-diagram" class="diagram-host"></div>
+
+        <div class="demo-grid">
+          <div><div class="compare-label">Input</div><pre class="result" id="par-input"></pre></div>
+          <div><div class="compare-label">Trace</div><div class="trace" id="par-trace"></div></div>
+          <div><div class="compare-label">Result</div><pre class="result" id="par-result"></pre></div>
+        </div>
+      </div>
+
+      <div class="tab-panel" data-tab="source">
+        <pre class="code"><code id="par-source"></code></pre>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ====================================================================
+     08 / INSTALL
+     ==================================================================== -->
+<section id="install">
+  <div class="wrap">
+    <div class="sec-head">
+      <div class="sec-num">09 / Install</div>
+      <div>
+        <h2 class="sec-title">Drop it into a page, or install it from npm.</h2>
+        <p class="sec-sub">
+          Every tagged release attaches a pre-built ESM bundle as a
+          release asset — single file, single URL, no build step on
+          your side. For Node and bundler-based setups, install from
+          npm. For CDN-style import-map setups, pull a tag through
+          jsDelivr.
+        </p>
+      </div>
+    </div>
+
+    <div class="grid-3">
+      <div class="card">
+        <div class="pill">browser · zero build</div>
+        <h4 style="margin: 12px 0 8px;">Release asset</h4>
+        <p style="margin-bottom: 12px;">
+          ~23 KB minified, ~7 KB gzipped. Pinned per tag.
+        </p>
+<pre class="code" style="font-size: 11.5px;"><span class="k">&lt;script</span> <span class="n">type</span>=<span class="s">"module"</span><span class="k">&gt;</span>
+  <span class="k">import</span> { railway, flow } <span class="k">from</span>
+    <span class="s">'https://github.com/isnogudus/rail.js'</span>
+  + <span class="s">'/releases/download/v0.3.0/rail.min.js'</span>;
+<span class="k">&lt;/script&gt;</span></pre>
+      </div>
+      <div class="card">
+        <div class="pill">browser · CDN</div>
+        <h4 style="margin: 12px 0 8px;">jsDelivr from tag</h4>
+        <p style="margin-bottom: 12px;">
+          Reads the published source tree at a Git tag. Multiple
+          modules, one per file.
+        </p>
+<pre class="code" style="font-size: 11.5px;"><span class="k">&lt;script</span> <span class="n">type</span>=<span class="s">"importmap"</span><span class="k">&gt;</span>
+  { <span class="s">"imports"</span>: {
+      <span class="s">"rail.js"</span>: <span class="s">"https://cdn.jsdelivr.net/gh/"</span>
+      + <span class="s">"isnogudus/rail.js@v0.3.0/rail.js"</span>
+    } }
+<span class="k">&lt;/script&gt;</span></pre>
+      </div>
+      <div class="card">
+        <div class="pill">node · bundler</div>
+        <h4 style="margin: 12px 0 8px;">From npm</h4>
+        <p style="margin-bottom: 12px;">
+          For Node, Vite, esbuild, webpack — the canonical install.
+        </p>
+<pre class="code" style="font-size: 11.5px;"><span class="n">$</span> <span class="k">npm install</span> @isnogudus/rail.js
+
+<span class="k">import</span> { railway, flow }
+  <span class="k">from</span> <span class="s">'@isnogudus/rail.js'</span>;</pre>
       </div>
     </div>
   </div>
