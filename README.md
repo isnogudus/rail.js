@@ -67,6 +67,12 @@ assets. Import them directly in a browser:
 Use `rail.js` instead of `rail.min.js` for the readable build (~44 KB)
 when debugging. Pin to a specific tag (`v0.3.0`) to lock the version.
 
+Each release also attaches **pre-compressed variants** for self-hosting:
+`rail.js.gz`, `rail.js.br`, `rail.min.js.gz`, `rail.min.js.br`. Drop
+them into your CDN folder and serve with `Content-Encoding: gzip` /
+`br` to skip server-side compression. (Don't `<script>`-import a
+`.gz` / `.br` URL directly — the browser will not decompress.)
+
 ### From a CDN
 
 ```html

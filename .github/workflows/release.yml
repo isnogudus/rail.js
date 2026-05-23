@@ -24,20 +24,25 @@ jobs:
         with:
           node-version: '22'
 
-      - name: Build ESM bundles
+      - name: Install brotli
+        run: sudo apt-get update && sudo apt-get install -y brotli
+
+      - name: Build ESM bundles + pre-compressed variants
         run: |
           mkdir -p dist
           npx --yes esbuild rail.js --bundle --format=esm \
             --outfile=dist/rail.js
           npx --yes esbuild rail.js --bundle --format=esm --minify \
             --outfile=dist/rail.min.js
+          gzip   -9k dist/rail.js dist/rail.min.js
+          brotli -kZ dist/rail.js dist/rail.min.js
 
       - name: Report bundle sizes
         run: |
+          echo "--- artefacts ---"
           ls -la dist/
-          echo "--- gzip sizes ---"
-          gzip -c dist/rail.js     | wc -c
-          gzip -c dist/rail.min.js | wc -c
+          echo "--- sizes (bytes) ---"
+          wc -c dist/* | sort -n
 
       - name: Attach to release
         uses: softprops/action-gh-release@v2
@@ -45,4 +50,8 @@ jobs:
           tag_name: ${{ github.event.release.tag_name || github.event.inputs.tag }}
           files: |
             dist/rail.js
+            dist/rail.js.gz
+            dist/rail.js.br
             dist/rail.min.js
+            dist/rail.min.js.gz
+            dist/rail.min.js.br
