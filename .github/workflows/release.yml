@@ -1,0 +1,48 @@
+name: Attach release bundles
+
+on:
+  release:
+    types: [created]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing release tag to attach bundles to'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  bundle:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name || github.event.inputs.tag }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Build ESM bundles
+        run: |
+          mkdir -p dist
+          npx --yes esbuild rail.js --bundle --format=esm \
+            --outfile=dist/rail.js
+          npx --yes esbuild rail.js --bundle --format=esm --minify \
+            --outfile=dist/rail.min.js
+
+      - name: Report bundle sizes
+        run: |
+          ls -la dist/
+          echo "--- gzip sizes ---"
+          gzip -c dist/rail.js     | wc -c
+          gzip -c dist/rail.min.js | wc -c
+
+      - name: Attach to release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.release.tag_name || github.event.inputs.tag }}
+          files: |
+            dist/rail.js
+            dist/rail.min.js

@@ -1,117 +1,93 @@
 /**
- * Error classes for rail.js. See spec §5 and §7.
+ * Error classes for rail.js v0.3.0. See spec §12.
  *
- * - `RailBuildError` — synchronous validation at builder time (§7.1, §5.4).
- *   Raised by builder methods (`a.wire`, `a.addNode`, ...), factories
- *   (`node`, `parallel`, `flow`, `catching`), and handle methods
- *   (`.out`, `.in`). The stack trace points at the offending line.
- * - `RailCheckError` — two-phase activity check (§7.2-7.4) and node-level
- *   structural checks. Carries a `phase` and a list of `errors`.
- * - `RailRuntimeError` — failures at run-time (§5.3).
+ * Single hierarchy rooted at `RailError`:
+ *   RailError
+ *   ├── RailBuildError       (build-time validation, §12.2)
+ *   ├── RailRuntimeError     (runtime failures, §12.1)
+ *   └── RailAggregateError   (parallel branch failure aggregate, §12.4)
+ *
+ * `err instanceof RailError` is the single membership test for any
+ * library-produced error.
  */
 
-/**
- * Builder/pre-execution validation error.
- *
- * Raised synchronously at the call site (e.g. inside `a.wire(...)`,
- * `nodeHandle.out(...)`, `flow(...)`, `catching(...)`).
- *
- * @extends Error
- */
-export class RailBuildError extends Error {
-  /**
-   * @param {string} code   One of the codes listed in spec §5.4.
-   * @param {string} message Human-readable message.
-   * @param {Record<string, unknown>} [fields] Extra fields per code.
-   */
-  constructor(code, message, fields = {}) {
+export class RailError extends Error {
+  constructor(message) {
     super(message);
+    this.name = 'RailError';
+  }
+}
+
+function composeMessage(code, options) {
+  if (options && typeof options.message === 'string') return options.message;
+  const parts = [code];
+  if (options?.details) {
+    try {
+      parts.push(JSON.stringify(options.details));
+    } catch {
+      /* ignore non-serialisable details */
+    }
+  }
+  if (options?.cause && options.cause.message) {
+    parts.push(`cause: ${options.cause.message}`);
+  }
+  return parts.join(' ');
+}
+
+export class RailBuildError extends RailError {
+  constructor(code, options) {
+    super(composeMessage(code, options));
     this.name = 'RailBuildError';
     this.code = code;
-    Object.assign(this, fields);
+    if (options?.details !== undefined) this.details = options.details;
+    if (options?.cause !== undefined) this.cause = options.cause;
   }
 }
 
-/**
- * Post-builder validation error.
- *
- * Raised by `node.check()` when one of the phases (completeness /
- * topology for activities; structural for step-/parallel-nodes)
- * reports issues.
- *
- * @extends Error
- */
-export class RailCheckError extends Error {
-  /**
-   * @param {'declaration'|'completeness'|'topology'} phase
-   * @param {Array<{code: string, suggestion?: string} & Record<string, unknown>>} errors
-   * @param {string} [message]
-   */
-  constructor(phase, errors, message) {
-    super(message ?? `Node check failed in phase '${phase}' with ${errors.length} error(s)`);
-    this.name = 'RailCheckError';
-    this.phase = phase;
-    this.errors = errors;
-  }
-}
-
-/**
- * Runtime error.
- *
- * Always carries the run's accumulated trace and the ctx that was
- * current when the error was raised.
- *
- * @extends Error
- */
-export class RailRuntimeError extends Error {
-  /**
-   * @param {string} code  One of the codes listed in spec §5.3.
-   * @param {string} message
-   * @param {object} info
-   * @param {string} info.flow                Top-level flow name.
-   * @param {Array<object>} info.trace        Trace entries up to the failure.
-   * @param {object} info.ctx                 Ctx state at failure.
-   * @param {Error} [info.cause]              Original error, if wrapping.
-   */
-  constructor(code, message, { flow, trace, ctx, cause } = {}) {
-    super(message);
+export class RailRuntimeError extends RailError {
+  constructor(code, options) {
+    super(composeMessage(code, options));
     this.name = 'RailRuntimeError';
     this.code = code;
-    this.flow = flow;
-    this.trace = trace ?? [];
-    this.ctx = ctx ?? {};
-    if (cause !== undefined) this.cause = cause;
+    if (options?.flowName !== undefined) this.flowName = options.flowName;
+    if (options?.details !== undefined) this.details = options.details;
+    if (options?.cause !== undefined) this.cause = options.cause;
   }
 }
 
-/* ------------------------------------------------------------------ */
-/* Shared helpers                                                     */
-/* ------------------------------------------------------------------ */
+export class RailAggregateError extends RailError {
+  constructor(branchErrors) {
+    const keys = Object.keys(branchErrors);
+    const message = `${keys.length} branch(es) failed: ${keys.join(', ')}`;
+    super(message);
+    this.name = 'RailAggregateError';
+    this.code = 'PARALLEL_BRANCH_FAILED';
+    this.branchErrors = branchErrors;
+    this.errors = Object.values(branchErrors);
+  }
+}
 
 /**
- * Validates a user-supplied name (node, port, entry, exit, branch,
- * flow). Raises `RailBuildError(INVALID_NAME)` synchronously if the
- * name is empty, whitespace-only, or contains a reserved character
- * (`.` or `:`). See spec §3.3.
+ * Validates a user-supplied name per spec §5.1.
+ * Raises RailBuildError(INVALID_NAME) synchronously on violation.
+ *
+ * Rules: non-empty string, not whitespace-only, no `.`.
  *
  * @param {unknown} name
- * @param {string} context  Short description for error messages (e.g.
- *                          "a.entry(name)", "node output").
- * @param {Record<string, unknown>} [fields] Extra fields on the error.
+ * @param {string} where  short location label for the error details
+ * @param {object} [extra] extra fields merged into details
  */
-export function validateName(name, context, fields = {}) {
+export function validateName(name, where, extra) {
   if (typeof name !== 'string' || name.length === 0 || /^\s*$/.test(name)) {
-    throw new RailBuildError(
-      'INVALID_NAME',
-      `${context}: name must be a non-empty, non-whitespace string`,
-      { name, ...fields }
-    );
+    throw new RailBuildError('INVALID_NAME', {
+      message: `${where}: name must be a non-empty, non-whitespace string`,
+      details: { where, name, ...extra },
+    });
   }
-  if (name.includes('.') || name.includes(':')) {
-    throw new RailBuildError(
-      'INVALID_NAME',
-      `${context}: name "${name}" contains reserved character (".", ":")`,
-      { name, ...fields }
-    );
+  if (name.includes('.')) {
+    throw new RailBuildError('INVALID_NAME', {
+      message: `${where}: name "${name}" contains reserved character "."`,
+      details: { where, name, ...extra },
+    });
   }
 }

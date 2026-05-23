@@ -1,126 +1,73 @@
 /**
- * `flow(name, node)` — runtime wrapper. See spec §2 (Flow), §3.6, §6.
+ * `flow(name, node)` — stateless run wrapper. See spec §9.
  *
- * A flow holds a top-level Rail-Node and a top-level name. The
- * factory returns a stateless object whose only responsibility is
- * to allocate a fresh run-state per invocation of `run(...)` and to
- * dispatch the top-level invoke. The flow does NOT pre-check the
- * node at factory time; the first `run(...)` triggers `node.check()`
- * if the node is unchecked.
+ * Returns `{ name, node, run, toMermaid }`. Validates arguments
+ * (INVALID_NAME / NOT_A_NODE / MULTI_INPUT_NODE) at construction time;
+ * never re-walks the held node's internal graph. Built-in builders
+ * return fully-validated nodes (§1.5).
  */
 
 import {
+  RailAggregateError,
   RailBuildError,
-  RailCheckError,
+  RailError,
   RailRuntimeError,
   validateName,
 } from './errors.js';
-import { isRailNode } from './ctx.js';
-import {
-  emitTracer,
-  now,
-  round2,
-  createRunState,
-  runStep,
-} from './runtime.js';
-import { renderNodeToMermaid } from './mermaid.js';
+import { makeRunState } from './runtime.js';
+import { isRailNode } from './util.js';
+import { renderFlowMermaid } from './mermaid.js';
 
 /**
  * @param {string} name
- * @param {object} node
- * @returns {object} A flow object with `name`, `node`, `run`, and `toMermaid`.
+ * @param {object} node  Rail-Node with exactly one input
  */
 export function flow(name, node) {
   validateName(name, 'flow(name, node)');
   if (!isRailNode(node)) {
-    throw new RailBuildError(
-      'NOT_A_NODE',
-      `flow(name, node): node must be a Rail-Node`,
-      { name }
-    );
+    throw new RailBuildError('NOT_A_NODE', {
+      message: 'flow(name, node): node is not a Rail-Node',
+      details: { arg: 'node' },
+    });
+  }
+  if (node.inputs.length !== 1) {
+    throw new RailBuildError('MULTI_INPUT_NODE', {
+      message: `flow(name, node): node has ${node.inputs.length} inputs; expected exactly 1. Wrap with pin(node, 'entry').`,
+      details: { inputs: node.inputs },
+    });
   }
 
-  const flowObject = {
+  const flowObj = {
     name,
     node,
+    async run(ctx, opts) {
+      const initialCtx = ctx === undefined ? {} : ctx;
+      const runState = makeRunState(name, opts);
 
-    /**
-     * Executes the held node with a fresh run-state.
-     *
-     * If the held node is not yet checked, calls `node.check()` first.
-     * A `RailCheckError` from that call propagates out of `run(...)`
-     * before any step executes.
-     *
-     * @param {object} [initialCtx]
-     * @param {object} [opts]
-     * @returns {Promise<{ctx: object, trace: object[], terminus: string}>}
-     */
-    async run(initialCtx = {}, opts = {}) {
-      if (!node.isChecked()) node.check();
-
-      const runState = createRunState(opts, name);
-      const shared = runState.shared;
-      shared.runStartTime = now();
-      runState.currentInput = node.inputs[0] ?? 'in';
-
-      emitTracer(shared, {
-        type: 'run-start',
-        ts: 0,
-        depth: 0,
-        name,
-        ctx: initialCtx,
-      });
-
-      let result;
-      let error;
       try {
-        result = await runStep(node, name, initialCtx, runState, {
-          topLevel: true,
-        });
-      } catch (e) {
-        error = e;
-      }
-
-      if (error !== undefined) {
-        if (error instanceof RailRuntimeError) {
-          if (!error.flow) error.flow = name;
-          if (!error.trace || error.trace.length === 0) error.trace = shared.trace;
-          if (!error.ctx) error.ctx = initialCtx;
+        const entryName = node.inputs[0];
+        const exit = await node._invoke(entryName, initialCtx, {}, runState, []);
+        return { exit, ctx: initialCtx, trace: runState.trace };
+      } catch (err) {
+        if (err instanceof RailAggregateError) {
+          if (err.flowName === undefined) err.flowName = name;
+          throw err;
         }
-        emitTracer(shared, {
-          type: 'run-error',
-          ts: round2(now() - shared.runStartTime),
-          depth: 0,
-          error,
+        if (err instanceof RailError) {
+          if (err.flowName === undefined) err.flowName = name;
+          throw err;
+        }
+        throw new RailRuntimeError('UNHANDLED_THROW', {
+          flowName: name,
+          cause: err,
+          message: `unhandled throw out of top-level node: ${err?.message ?? String(err)}`,
         });
-        throw error;
       }
-
-      const finalCtx = Object.prototype.hasOwnProperty.call(result, 'ctx')
-        ? result.ctx
-        : initialCtx;
-      emitTracer(shared, {
-        type: 'run-end',
-        ts: round2(now() - shared.runStartTime),
-        depth: 0,
-        terminus: result.output,
-        ctx: finalCtx,
-      });
-
-      return {
-        ctx: finalCtx,
-        trace: shared.trace,
-        terminus: result.output,
-      };
     },
-
-    /**
-     * Renders the held node as Mermaid.
-     */
     toMermaid(opts) {
-      return renderNodeToMermaid(node, name, opts);
+      return renderFlowMermaid(flowObj, opts);
     },
   };
 
-  return flowObject;
+  return flowObj;
 }

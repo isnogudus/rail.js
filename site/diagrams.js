@@ -347,21 +347,20 @@ export async function createDiagram(containerId, graphDef, diagramId) {
 }
 
 /**
- * Groups a rail.js trace by diagram node. Each step in `diagramSteps`
- * gains a `traceEntries` array containing the trace rows that belong
- * to it.
+ * Groups a rail.js v0.3 trace (push-order = pre-order DFS) by diagram
+ * node. Each step in `diagramSteps` gains a `traceEntries` array.
  *
- * The trace is walked in order, paired with diagram steps in order:
- *   - sub-step entries (`step.startsWith(actName + '.')`) are
- *     accumulated for the current diagram step,
- *   - the next entry with `step === actName` closes that diagram step
- *     (compound case: it's the wrapping summary; leaf case: it's the
- *     entry itself).
+ * For each diagram step (in declaration order):
+ *   1. Skip ahead past trace entries that don't belong to this step.
+ *   2. Take the first matching entry (either the wrapper
+ *      `step === actName`, or a sub-step `step.startsWith(actName + '.')`).
+ *   3. If the matched entry was the wrapper, also drain following
+ *      sub-step entries until a non-matching entry appears.
  *
- * This makes the function work for sub-activities and parallel-nodes
- * (one diagram step → many trace entries) AND for loops where the
- * same node appears as several consecutive diagram steps (one diagram
- * step → exactly one trace entry).
+ * This shape handles:
+ *   - flat traces (each diagram step → one trace entry),
+ *   - sub-activities (one diagram step → wrapper + many sub-entries),
+ *   - loops (the same node listed multiple times → one entry per cycle).
  *
  * @param {Array<{step: string}>} trace
  * @param {Array<{node: string}>} diagramSteps
@@ -372,21 +371,27 @@ export function groupTraceForDiagram(trace, diagramSteps) {
   return diagramSteps.map((step) => {
     const actName = String(step.node).replace(/^n_/, '');
     const entries = [];
-    while (i < trace.length) {
-      const e = trace[i];
-      if (e.step.startsWith(actName + '.')) {
-        entries.push(e);
-        i++;
-        continue;
-      }
-      if (e.step === actName) {
-        entries.push(e);
-        i++;
-        break;
-      }
-      // Trace entry doesn't belong to this diagram step → stop here.
-      break;
+
+    while (
+      i < trace.length &&
+      trace[i].step !== actName &&
+      !trace[i].step.startsWith(actName + '.')
+    ) {
+      i++;
     }
+
+    if (i < trace.length) {
+      const first = trace[i];
+      entries.push(first);
+      i++;
+      if (first.step === actName) {
+        while (i < trace.length && trace[i].step.startsWith(actName + '.')) {
+          entries.push(trace[i]);
+          i++;
+        }
+      }
+    }
+
     return { ...step, traceEntries: entries };
   });
 }

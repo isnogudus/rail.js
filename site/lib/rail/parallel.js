@@ -1,334 +1,189 @@
 /**
- * `parallel(branches)` — Parallel-Node factory. See spec §3.7, §6.2, §11.
+ * `parallel(branches, merge?)` — concurrent group node. See spec §8, §15.6.
  *
- * Runs all branches concurrently via `Promise.allSettled`. Returns a
- * typed `parallel-results` ctx carrying each branch's terminal
- * `{ terminus, ctx }`. On any branch failure, awaits all siblings,
- * then re-throws the first error in branch declaration order.
- *
- * Branches each receive their own fork of the run-state so that
- * interleaved `await`s do not trample per-fork slots like `depth`,
- * `currentInput`, and `path`. An internal AbortController is folded
- * into each branch's combined signal so a sibling failure causes
- * cooperative abort of in-flight work.
- *
- * Implementation: each Parallel-Node is `Object.create(PARALLEL_PROTO)`
- * with per-instance state (`branches`, `_branchKeys`, `_checked`).
+ * Properties of the resulting node:
+ *   __rail_kind__: 'parallel'
+ *   inputs:  ['in']
+ *   outputs: merge ? merge.outputs : ['out']
+ *   _branches: branches
+ *   _merge:    merge | undefined
  */
 
 import {
+  RailAggregateError,
   RailBuildError,
-  RailCheckError,
+  RailError,
   RailRuntimeError,
   validateName,
 } from './errors.js';
-import { isRailNode } from './ctx.js';
-import {
-  callLogger,
-  checkKillAndLimit,
-  combineSignals,
-  emitTracer,
-  joinPath,
-  now,
-  round2,
-} from './runtime.js';
+import { invokeNode } from './runtime.js';
+import { isPlainObject, isRailNode } from './util.js';
+import { renderActivityMermaid } from './mermaid.js';
 
-/* ------------------------------------------------------------------ */
-/* Check                                                              */
-/* ------------------------------------------------------------------ */
-
-function checkParallel(node) {
-  if (node._checked) return;
-
-  const errors = [];
-  if (node._branchKeys.length === 0) {
-    errors.push({ code: 'EMPTY_PARALLEL' });
-  }
-  for (const key of node._branchKeys) {
-    const b = node.branches[key];
-    try {
-      if (!b.isChecked()) b.check();
-    } catch (e) {
-      if (e instanceof RailCheckError) {
-        for (const inner of e.errors) {
-          const path = inner.path ? `${key}.${inner.path}` : key;
-          errors.push({ ...inner, path });
-        }
-      } else {
-        throw e;
-      }
-    }
-  }
-
-  if (errors.length > 0) {
-    throw new RailCheckError('completeness', errors);
-  }
-  node._checked = true;
-}
-
-/* ------------------------------------------------------------------ */
-/* Branch runner                                                      */
-/* ------------------------------------------------------------------ */
-
-/**
- * Runs a single branch. Returns either { status: 'ok', key, result }
- * or { status: 'failed', key, error } — never throws.
- */
-function runBranch(node, branchKey, ctx, runState, internalAC) {
-  const branch = node.branches[branchKey];
-  const shared = runState.shared;
-  const branchPath = joinPath(runState.path, branchKey);
-  const branchInputPort = branch.inputs?.[0] ?? 'in';
-
-  const invocation = (shared.cycleCounters.get(branchPath) ?? 0) + 1;
-  shared.cycleCounters.set(branchPath, invocation);
-  const local = shared.localState.get(branchPath) ?? {};
-
-  const branchCombined = combineSignals([
-    runState.combinedSignal,
-    internalAC.signal,
-  ]);
-
-  /** @type {any} */
-  const branchFork = {
-    ...runState,
-    currentInput: branchInputPort,
-    path: branchPath,
-    combinedSignal: branchCombined,
-    invocation,
-  };
-  if (branch.railKind === 'activity') {
-    branchFork.depth = runState.depth + 1;
-    branchFork.parentDepth = runState.depth;
-  }
-
-  const t0 = now();
-
-  return (async () => {
-    try {
-      checkKillAndLimit(runState, ctx);
-    } catch (e) {
-      try { internalAC.abort(e); } catch { internalAC.abort(); }
-      const t1 = now();
-      emitBranchThrow(shared, runState.depth, branchKey, e, round2(t1 - t0), invocation, local);
-      pushTraceEntry(shared, branchPath, runState.depth, round2(t1 - t0), null, true, e, invocation, local);
-      return { status: 'failed', key: branchKey, error: e };
-    }
-
-    emitTracer(shared, {
-      type: 'branch-start',
-      ts: round2(t0 - shared.runStartTime),
-      depth: runState.depth,
-      branch: branchKey,
-      invocation,
-      local,
-    });
-
-    let result;
-    let invokeError;
-    try {
-      result = await branch.invoke(branchKey, ctx, branchFork, local);
-    } catch (e) {
-      invokeError = e;
-    }
-
-    const t1 = now();
-    const duration = round2(t1 - t0);
-
-    if (invokeError !== undefined) {
-      let propagated = invokeError;
-      if (
-        !(invokeError instanceof RailRuntimeError) &&
-        !(invokeError instanceof RailCheckError)
-      ) {
-        propagated = new RailRuntimeError(
-          'UNHANDLED_THROW',
-          `Branch "${branchPath}" threw: ${invokeError?.message ?? invokeError}`,
-          {
-            flow: shared.flowName,
-            trace: shared.trace,
-            ctx,
-            cause: invokeError,
-          }
-        );
-      }
-      try { internalAC.abort(propagated); } catch { internalAC.abort(); }
-      emitBranchThrow(shared, runState.depth, branchKey, propagated, duration, invocation, local);
-      pushTraceEntry(shared, branchPath, runState.depth, duration, null, true, propagated, invocation, local);
-      return { status: 'failed', key: branchKey, error: propagated };
-    }
-
-    if (
-      typeof result !== 'object' ||
-      result === null ||
-      typeof result.output !== 'string'
-    ) {
-      const err = new RailRuntimeError(
-        'INVALID_SUB_NODE',
-        `Branch "${branchPath}" invoke returned invalid shape`,
-        { flow: shared.flowName, trace: shared.trace, ctx }
-      );
-      try { internalAC.abort(err); } catch { internalAC.abort(); }
-      emitBranchThrow(shared, runState.depth, branchKey, err, duration, invocation, local);
-      pushTraceEntry(shared, branchPath, runState.depth, duration, null, true, err, invocation, local);
-      return { status: 'failed', key: branchKey, error: err };
-    }
-    if (!branch.outputs.includes(result.output)) {
-      const err = new RailRuntimeError(
-        'UNKNOWN_OUTPUT_AT_RUNTIME',
-        `Branch "${branchPath}" returned unknown output "${result.output}"; expected one of: ${branch.outputs.join(', ')}`,
-        { flow: shared.flowName, trace: shared.trace, ctx }
-      );
-      try { internalAC.abort(err); } catch { internalAC.abort(); }
-      emitBranchThrow(shared, runState.depth, branchKey, err, duration, invocation, local);
-      pushTraceEntry(shared, branchPath, runState.depth, duration, null, true, err, invocation, local);
-      return { status: 'failed', key: branchKey, error: err };
-    }
-
-    // Persist returned local (if any).
-    const outgoingLocal = Object.prototype.hasOwnProperty.call(result, 'local')
-      ? result.local
-      : local;
-    if (Object.prototype.hasOwnProperty.call(result, 'local')) {
-      shared.localState.set(branchPath, result.local);
-    }
-
-    emitTracer(shared, {
-      type: 'branch-end',
-      ts: round2(t1 - shared.runStartTime),
-      depth: runState.depth,
-      branch: branchKey,
-      output: result.output,
-      invocation,
-      local: outgoingLocal,
-    });
-    pushTraceEntry(shared, branchPath, runState.depth, duration, result.output, false, undefined, invocation, outgoingLocal);
-
-    return { status: 'ok', key: branchKey, result };
-  })();
-}
-
-function emitBranchThrow(shared, depth, branchKey, error, duration, invocation, local) {
-  emitTracer(shared, {
-    type: 'branch-throw',
-    ts: round2(now() - shared.runStartTime),
-    depth,
-    branch: branchKey,
-    error,
-    duration,
-    invocation,
-    local,
-  });
-}
-
-function pushTraceEntry(shared, step, depth, duration, output, threw, error, invocation, local) {
-  const entry = { step, output, duration, depth, threw, invocation, local };
-  if (error !== undefined) entry.error = error;
-  shared.trace.push(entry);
-  callLogger(shared, entry);
-}
-
-/* ------------------------------------------------------------------ */
-/* Invoke                                                             */
-/* ------------------------------------------------------------------ */
-
-async function invokeParallel(node, name, ctx, runState, _local) {
-  if (!node._checked) {
-    throw new RailRuntimeError(
-      'INTERNAL',
-      `Parallel-Node "${name}" invoked before check()`,
-      {
-        flow: runState.shared.flowName,
-        trace: runState.shared.trace,
-        ctx,
-      }
-    );
-  }
-
-  const internalAC = new AbortController();
-
-  const branchPromises = node._branchKeys.map((key) =>
-    runBranch(node, key, ctx, runState, internalAC)
-  );
-
-  const settled = await Promise.all(branchPromises);
-
-  // First error in branch declaration order, per spec §3.7.
-  for (const r of settled) {
-    if (r.status === 'failed') {
-      throw r.error;
-    }
-  }
-
-  const results = Object.create(null);
-  for (const r of settled) {
-    const branchCtx =
-      r.result && Object.prototype.hasOwnProperty.call(r.result, 'ctx')
-        ? r.result.ctx
-        : ctx;
-    results[r.key] = {
-      terminus: r.result.output,
-      ctx: branchCtx,
-    };
-  }
-
-  return {
-    output: 'done',
-    ctx: {
-      __type: 'parallel-results',
-      inputCtx: ctx,
-      results,
-    },
-  };
-}
-
-/* ------------------------------------------------------------------ */
-/* Shared prototype                                                   */
-/* ------------------------------------------------------------------ */
-
-const PARALLEL_PROTO = {
-  railKind: 'parallel',
-  inputs: ['in'],
-  outputs: ['done'],
-  check()    { return checkParallel(this); },
-  isChecked() { return this._checked; },
-  invoke(name, ctx, runState, local) {
-    return invokeParallel(this, name, ctx, runState, local);
-  },
-};
-
-/* ------------------------------------------------------------------ */
-/* Factory                                                            */
-/* ------------------------------------------------------------------ */
+const RESERVED_MERGE_NAME = '__merge__';
 
 /**
  * @param {Record<string, object>} branches
- * @returns {object} An unchecked Parallel-Node.
+ * @param {object} [merge]  optional merge node
+ * @returns {object} Rail-Node with `__rail_kind__: 'parallel'`
  */
-export function parallel(branches) {
-  if (!branches || typeof branches !== 'object' || Array.isArray(branches)) {
-    throw new TypeError(
-      'parallel(branches): branches must be an object map of branch name to Rail-Node'
-    );
+export function parallel(branches, merge) {
+  if (!isPlainObject(branches)) {
+    throw new TypeError('parallel(branches, merge?): branches must be a plain object');
   }
 
-  const branchKeys = Object.keys(branches);
+  const branchNames = Object.keys(branches);
+  if (branchNames.length === 0) {
+    throw new RailBuildError('MISSING_NODES', {
+      message: 'parallel: branches object is empty',
+    });
+  }
 
-  // Per-name eager validation; empty-map structural check deferred to check().
-  for (const key of branchKeys) {
-    validateName(key, 'parallel(): branch key', { branch: key });
-    if (!isRailNode(branches[key])) {
-      throw new RailBuildError(
-        'NOT_A_NODE',
-        `parallel(): branch "${key}" is not a Rail-Node`,
-        { branch: key }
-      );
+  for (const name of branchNames) {
+    validateName(name, 'parallel(): branch key', { branch: name });
+    if (name === RESERVED_MERGE_NAME) {
+      throw new RailBuildError('INVALID_NAME', {
+        message: `parallel: branch name "${RESERVED_MERGE_NAME}" is reserved`,
+        details: { branch: name },
+      });
+    }
+    const b = branches[name];
+    if (!isRailNode(b)) {
+      throw new RailBuildError('NOT_A_NODE', {
+        message: `parallel: branch "${name}" is not a Rail-Node`,
+        details: { branch: name },
+      });
+    }
+    if (b.inputs.length !== 1) {
+      throw new RailBuildError('MULTI_INPUT_NODE', {
+        message: `parallel: branch "${name}" has ${b.inputs.length} inputs; expected exactly 1. Wrap with pin(node, 'entry').`,
+        details: { branch: name, inputs: b.inputs },
+      });
     }
   }
 
-  const node = Object.create(PARALLEL_PROTO);
-  node.branches    = branches;
-  node._branchKeys = branchKeys;
-  node._checked    = false;
+  if (merge !== undefined) {
+    if (!isRailNode(merge)) {
+      throw new RailBuildError('NOT_A_NODE', {
+        message: 'parallel: merge is not a Rail-Node',
+        details: { arg: 'merge' },
+      });
+    }
+    if (merge.inputs.length !== 1) {
+      throw new RailBuildError('MULTI_INPUT_NODE', {
+        message: `parallel: merge node has ${merge.inputs.length} inputs; expected exactly 1. Wrap with pin(node, 'entry').`,
+        details: { arg: 'merge', inputs: merge.inputs },
+      });
+    }
+  }
+
+  const outputs = merge ? merge.outputs.slice() : ['out'];
+
+  const node = {
+    __rail_type__: 'node',
+    __rail_kind__: 'parallel',
+    inputs: ['in'],
+    outputs,
+    _branches: branches,
+    _merge: merge,
+  };
+
+  async function doInvoke(entry, ctx, local, runState, path) {
+    if (!local.branches) local.branches = {};
+
+    const branchCtxes = {};
+
+    const promises = branchNames.map((branchName) => {
+      const branchNode = branches[branchName];
+      if (!local.branches[branchName]) local.branches[branchName] = {};
+      const branchLocal = local.branches[branchName];
+      const branchPath = [...path, branchName];
+      const branchEntry = branchNode.inputs[0];
+
+      const branchCtx = { ...ctx };
+      branchCtxes[branchName] = branchCtx;
+
+      const p = branchNode._invoke(branchEntry, branchCtx, branchLocal, runState, branchPath);
+      return p.catch((err) => {
+        try { runState.internalAbortController.abort(); } catch { /* ignore */ }
+        throw err;
+      });
+    });
+
+    const settled = await Promise.allSettled(promises);
+
+    const branchErrors = {};
+    for (let i = 0; i < settled.length; i++) {
+      if (settled[i].status === 'rejected') {
+        const reason = settled[i].reason;
+        const wrapped = reason instanceof RailError
+          ? reason
+          : new RailRuntimeError('UNHANDLED_THROW', {
+              cause: reason,
+              flowName: runState.flowName,
+              message: `parallel branch "${branchNames[i]}" threw a non-library value: ${reason?.message ?? String(reason)}`,
+            });
+        branchErrors[branchNames[i]] = wrapped;
+      }
+    }
+    if (Object.keys(branchErrors).length > 0) {
+      const agg = new RailAggregateError(branchErrors);
+      agg.flowName = runState.flowName;
+      throw agg;
+    }
+
+    // Aggregate: replace incoming ctx in place with { branchName: branchCtx }.
+    for (const k of Object.keys(ctx)) delete ctx[k];
+    for (const branchName of branchNames) {
+      ctx[branchName] = branchCtxes[branchName];
+    }
+
+    if (!merge) return 'out';
+
+    if (!local._merge) local._merge = {};
+    const mergePath = [...path, RESERVED_MERGE_NAME];
+    const mergeEntry = merge.inputs[0];
+    return await merge._invoke(mergeEntry, ctx, local._merge, runState, mergePath);
+  }
+
+  node._invoke = (entry, ctx, local, runState, path) =>
+    invokeNode(doInvoke, 'parallel', entry, ctx, local, runState, path);
+
+  node.toMermaid = (name, opts) => {
+    // Wrap in a top-level subgraph for stand-alone rendering.
+    const direction = opts?.direction ?? 'LR';
+    const lines = [`flowchart ${direction}`];
+    if (name) lines.push(`  %% ${name}`);
+    // Use the activity renderer pathway via a synthetic wrapper: just
+    // render parallel body as a top-level subgraph.
+    // Simpler: emit a single subgraph block.
+    let counter = 0;
+    const ids = (prefix = 'n') => `${prefix}${counter++}`;
+    const wrapperId = ids();
+    lines.push(`  subgraph ${wrapperId} ["parallel"]`);
+    const branchIds = new Map();
+    for (const bn of branchNames) {
+      const id = ids();
+      branchIds.set(bn, id);
+      const b = branches[bn];
+      if (b.__rail_kind__ === 'activity' || b.__rail_kind__ === 'parallel') {
+        lines.push(`    subgraph ${id} ["${bn}"]`);
+        lines.push(`      ${ids()}["${b.__rail_kind__}"]`);
+        lines.push(`    end`);
+      } else {
+        lines.push(`    ${id}["${bn}"]`);
+      }
+    }
+    if (merge) {
+      const mid = ids();
+      lines.push(`    ${mid}["__merge__"]`);
+      for (const bid of branchIds.values()) {
+        lines.push(`    ${bid} --> ${mid}`);
+      }
+    }
+    lines.push(`  end`);
+    return lines.join('\n');
+  };
+
   return node;
 }

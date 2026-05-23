@@ -20,6 +20,7 @@
     "test:watch": "vitest",
     "example": "node example.js",
     "examples": "node examples/run-all.js",
+    "build": "rm -rf dist && mkdir -p dist && npx --yes esbuild rail.js --bundle --format=esm --outfile=dist/rail.js && npx --yes esbuild rail.js --bundle --format=esm --minify --outfile=dist/rail.min.js",
     "site:sync": "rm -rf site/lib && mkdir -p site/lib && cp rail.js site/lib/rail.js && cp -r rail site/lib/rail && cp docs/rail-spec.md site/rail-spec.md",
     "site:dev": "cd site && python3 -m http.server 8080"
   },

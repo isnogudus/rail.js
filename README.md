@@ -34,8 +34,48 @@ This README is the practical guide.
 
 ## Install
 
+### From npm
+
 ```sh
 npm install @isnogudus/rail.js
+```
+
+### From a GitHub release (browser, no bundler)
+
+Each tagged release attaches two pre-built ESM bundles as release
+assets. Import them directly in a browser:
+
+```html
+<script type="module">
+  // ~23 KB minified, ~7 KB gzipped
+  import { railway, flow } from
+    'https://github.com/isnogudus/rail.js/releases/download/v0.3.0/rail.min.js';
+
+  const wf = railway((r) => {
+    r.step('hello', async (ctx) => { ctx.greeted = true; });
+  });
+
+  const r = await flow('demo', wf).run({});
+  console.log(r.exit, r.ctx);
+</script>
+```
+
+Use `rail.js` instead of `rail.min.js` for the readable build (~44 KB)
+when debugging. Pin to a specific tag (`v0.3.0`) to lock the version.
+
+### From a CDN
+
+```html
+<script type="importmap">
+  {
+    "imports": {
+      "rail.js": "https://cdn.jsdelivr.net/gh/isnogudus/rail.js@v0.3.0/rail.js"
+    }
+  }
+</script>
+<script type="module">
+  import { railway, flow } from 'rail.js';
+</script>
 ```
 
 ESM only. Node 22+ recommended (Node ≥ 19 needed for `AbortSignal.any`).
