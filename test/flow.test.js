@@ -265,6 +265,63 @@ describe('cancellation', () => {
   });
 });
 
+describe('default console logger', () => {
+  it('writes one line per step to console.log with the documented format', async () => {
+    const original = console.log;
+    const lines = [];
+    console.log = (msg) => lines.push(msg);
+    try {
+      const wf = activity((a) => {
+        a.entry('in');
+        a.addNode('greet', step(async (ctx) => { ctx.greeted = true; }));
+        a.exit('done');
+        a.wire('.in', 'greet.success');
+        a.wire('greet.success', '.done');
+        a.wire('greet.failure', '.done');
+      });
+      // Note: no logger override — exercises defaultConsoleLogger.
+      await flow('demo', wf).run({});
+    } finally {
+      console.log = original;
+    }
+
+    // Two lines: sub-step (greet) and top-level (demo).
+    expect(lines.length).toBe(2);
+    // Format: `[flow] <indent><label> (<ms>) -> <exit>` where indent is
+    // path.length * 2 spaces (3 spaces between `]` and `greet` here:
+    // one from the format literal plus two indent).
+    expect(lines[0]).toMatch(/^\[demo\] {3}greet \(\d+\.\d{2}ms\) -> success$/);
+    expect(lines[1]).toMatch(/^\[demo\] demo \(\d+\.\d{2}ms\) -> done$/);
+  });
+
+  it('appends #N suffix for cycles > 1', async () => {
+    const original = console.log;
+    const lines = [];
+    console.log = (msg) => lines.push(msg);
+    try {
+      const wf = activity((a) => {
+        a.entry('in');
+        a.addNode('try', atom(async (_ctx, local) => {
+          local.n = (local.n ?? 0) + 1;
+          return local.n >= 2 ? 'done' : 'again';
+        }, { outputs: ['done', 'again'] }));
+        a.exit('out');
+        a.wire('.in', 'try.in');
+        a.wire('try.again', 'try.in');
+        a.wire('try.done', '.out');
+      });
+      await flow('looper', wf).run({});
+    } finally {
+      console.log = original;
+    }
+
+    const tryLines = lines.filter((l) => l.includes('try '));
+    expect(tryLines.length).toBe(2);
+    expect(tryLines[0]).toMatch(/-> again$/);
+    expect(tryLines[1]).toMatch(/-> done #2$/);
+  });
+});
+
 describe('step budget', () => {
   it('throws STEP_BUDGET_EXCEEDED when trace exceeds maxSteps', async () => {
     const wf = activity((a) => {

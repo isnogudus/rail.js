@@ -18,6 +18,7 @@
   "scripts": {
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
     "test:qjs": "qjs --std test-quickjs.js",
     "example": "node example.js",
     "examples": "node examples/run-all.js",
@@ -29,6 +30,7 @@
     "node": ">=22"
   },
   "devDependencies": {
+    "@vitest/coverage-v8": "^2.1.9",
     "vitest": "^2.1.0"
   },
   "keywords": [
