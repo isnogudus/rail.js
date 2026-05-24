@@ -44,6 +44,12 @@ function assertTrue(label, cond) {
 
 const noLog = () => {};
 
+// All test blocks are wrapped in `async function main()` because the
+// `quickjs` apt package on Ubuntu (used by CI) ships QuickJS 2021-03-27,
+// which does not parse top-level await. QuickJS-ng (≥ 2024) and Node
+// happily run either form; this shape works in all three.
+async function main() {
+
 /* ---------------- markers + invoke contract ---------------- */
 console.log('§16.1 markers + invoke contract');
 {
@@ -252,6 +258,14 @@ console.log('runInfo.signal absent in qjs (no AbortController)');
   }
 }
 
-console.log('');
-console.log(`${passed} passed, ${failed} failed`);
-if (failed > 0) throw new Error(`${failed} smoke-test assertion(s) failed`);
+  console.log('');
+  console.log(`${passed} passed, ${failed} failed`);
+  if (failed > 0) throw new Error(`${failed} smoke-test assertion(s) failed`);
+}
+
+main().catch((err) => {
+  console.log('FATAL:', err?.message ?? String(err));
+  // Unhandled rejection terminates the runtime with non-zero exit in
+  // both QuickJS and Node — that's our CI signal.
+  throw err;
+});
